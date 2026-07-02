@@ -15,6 +15,12 @@ A comprehensive time clock application that tracks employee hours and calculates
 
 No installation required! Just make sure you have Python 3.6 or later installed.
 
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
 ## Versioning and Updates
 
 The application version is managed in `time_clock_version.py`:
