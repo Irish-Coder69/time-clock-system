@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+installer_output/
+*.spec.bak
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Runtime data and backups
+Backup Data/
+time_clock_data.json
