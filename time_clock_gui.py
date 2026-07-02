@@ -3,6 +3,7 @@ Time Clock Program with GUI and Hourly Wage Tracking
 """
 
 import json
+import calendar
 import os
 import shutil
 import tkinter as tk
@@ -17,35 +18,145 @@ from typing import Dict, Optional
 try:
     from tkcalendar import DateEntry
 except ImportError:
-    class DateEntry(ttk.Entry):
-        """Fallback date entry when tkcalendar is unavailable."""
+    class DateEntry(ttk.Frame):
+        """Fallback date picker when tkcalendar is unavailable."""
 
         def __init__(self, master=None, **kwargs):
+            width = kwargs.pop("width", 12)
             self._date_pattern = kwargs.pop("date_pattern", "mm/dd/yyyy")
-            self._date_value = datetime.now().date()
-            super().__init__(master, **kwargs)
-            self._sync_text()
+            self._firstweekday = kwargs.pop("firstweekday", "sunday")
+            self._current_date = datetime.now().date()
+            super().__init__(master)
+
+            self._date_var = tk.StringVar(value=self._format_date(self._current_date))
+            self._entry = ttk.Entry(self, width=width, textvariable=self._date_var)
+            self._entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self._button = ttk.Button(self, text="📅", width=2, command=self._open_calendar)
+            self._button.pack(side=tk.LEFT, padx=(4, 0))
+
+        def _format_date(self, value):
+            return value.strftime("%m/%d/%Y")
+
+        def _parse_date(self, text):
+            return datetime.strptime(text.strip(), "%m/%d/%Y").date()
 
         def _sync_text(self):
-            self.delete(0, tk.END)
-            self.insert(0, self._date_value.strftime("%m/%d/%Y"))
+            self._date_var.set(self._format_date(self._current_date))
 
-        def set_date(self, value):
+        def _set_current_date(self, value):
             if isinstance(value, datetime):
-                self._date_value = value.date()
+                self._current_date = value.date()
             else:
-                self._date_value = value
+                self._current_date = value
             self._sync_text()
 
+        def _open_calendar(self):
+            popup = tk.Toplevel(self)
+            popup.title("Select Date")
+            popup.resizable(False, False)
+            popup.transient(self.winfo_toplevel())
+            popup.grab_set()
+
+            anchor_widget = self._button.winfo_toplevel()
+            popup.update_idletasks()
+            x = anchor_widget.winfo_rootx() + self._button.winfo_rootx() - anchor_widget.winfo_rootx()
+            y = anchor_widget.winfo_rooty() + self._button.winfo_rooty() - anchor_widget.winfo_rooty() + self._button.winfo_height()
+            popup.geometry(f"+{x}+{y}")
+
+            month_names = [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December",
+            ]
+            weekday_names = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
+            weekday_offset = 6 if str(self._firstweekday).lower().startswith("mon") else 0
+
+            today = self._current_date
+            month_var = tk.IntVar(value=today.month)
+            year_var = tk.IntVar(value=today.year)
+
+            container = ttk.Frame(popup, padding=10)
+            container.pack(fill=tk.BOTH, expand=True)
+
+            header = ttk.Frame(container)
+            header.pack(fill=tk.X, pady=(0, 8))
+
+            month_combo = ttk.Combobox(header, width=12, state="readonly", values=month_names)
+            month_combo.current(today.month - 1)
+            month_combo.pack(side=tk.LEFT)
+
+            year_spin = ttk.Spinbox(header, from_=1900, to=2100, width=6, textvariable=year_var)
+            year_spin.pack(side=tk.LEFT, padx=(6, 0))
+
+            calendar_frame = ttk.Frame(container)
+            calendar_frame.pack()
+
+            button_rows = []
+
+            def refresh_calendar(*_):
+                for child in calendar_frame.winfo_children():
+                    child.destroy()
+
+                month_index = month_combo.current() + 1
+                year_value = int(year_var.get())
+                month_label = ttk.Label(container, text=f"{month_names[month_index - 1]} {year_value}", style="Header.TLabel")
+                month_label.pack_forget()
+
+                for column, weekday_name in enumerate(weekday_names):
+                    display_index = (column + weekday_offset) % 7
+                    ttk.Label(calendar_frame, text=weekday_names[display_index], width=4, anchor=tk.CENTER).grid(row=0, column=column, padx=1, pady=(0, 4))
+
+                month_calendar = calendar.monthcalendar(year_value, month_index)
+                for row_index, week in enumerate(month_calendar, start=1):
+                    for column, day in enumerate(week):
+                        if day == 0:
+                            ttk.Label(calendar_frame, text="", width=4).grid(row=row_index, column=column, padx=1, pady=1)
+                            continue
+
+                        def choose_date(day_value=day, month_value=month_index, year_value=year_value):
+                            self._set_current_date(datetime(year_value, month_value, day_value).date())
+                            popup.destroy()
+
+                        is_today = day == today.day and month_index == today.month and year_value == today.year
+                        style = "Accent.TButton" if is_today else "TButton"
+                        ttk.Button(calendar_frame, text=str(day), width=4, style=style, command=choose_date).grid(row=row_index, column=column, padx=1, pady=1)
+
+            def on_month_change(_=None):
+                refresh_calendar()
+
+            def on_year_change(_=None):
+                refresh_calendar()
+
+            month_combo.bind("<<ComboboxSelected>>", on_month_change)
+            year_var.trace_add("write", on_year_change)
+            refresh_calendar()
+
+        def pack(self, *args, **kwargs):
+            return super().pack(*args, **kwargs)
+
+        def grid(self, *args, **kwargs):
+            return super().grid(*args, **kwargs)
+
+        def place(self, *args, **kwargs):
+            return super().place(*args, **kwargs)
+
+        def set_date(self, value):
+            self._set_current_date(value)
+
         def get_date(self):
-            text = self.get().strip()
-            if not text:
-                return self._date_value
             try:
-                self._date_value = datetime.strptime(text, "%m/%d/%Y").date()
+                self._current_date = self._parse_date(self._date_var.get())
             except ValueError:
                 pass
-            return self._date_value
+            return self._current_date
+
+        def get(self):
+            return self._date_var.get()
+
+        def delete(self, first, last=None):
+            self._entry.delete(first, last)
+
+        def insert(self, index, string):
+            self._entry.insert(index, string)
 
 from time_clock_paths import get_backup_dir, get_data_file_path
 from time_clock_version import APP_NAME, APP_VERSION, GITHUB_REPO, is_newer_version
