@@ -1372,10 +1372,11 @@ class TimeClockGUI:
                     self.employee_list_text.insert(tk.END, f"  Email: {emp['email']}\n")
             
             # Address
-            if emp.get('address') or emp.get('city') or emp.get('state'):
+            address_line = emp.get('street') or emp.get('address')
+            if address_line or emp.get('city') or emp.get('state') or emp.get('zip_code'):
                 self.employee_list_text.insert(tk.END, f"\nAddress:\n")
-                if emp.get('address'):
-                    self.employee_list_text.insert(tk.END, f"  {emp['address']}\n")
+                if address_line:
+                    self.employee_list_text.insert(tk.END, f"  {address_line}\n")
                 city_state_zip = emp.get('city', '')
                 if emp.get('state'):
                     city_state_zip += f", {emp['state']}" if city_state_zip else emp['state']
@@ -1424,10 +1425,11 @@ class TimeClockGUI:
             info += f"Hourly Rate: ${employee['hourly_rate']:.2f}\n"
             if employee.get('overtime_rate'):
                 info += f"Overtime Rate: ${employee['overtime_rate']:.2f}\n"
-            if employee.get('street') or employee.get('city') or employee.get('state') or employee.get('zip_code'):
+            address_line = employee.get('street') or employee.get('address')
+            if address_line or employee.get('city') or employee.get('state') or employee.get('zip_code'):
                 info += f"\nAddress:\n"
-                if employee.get('street'):
-                    info += f"{employee['street']}\n"
+                if address_line:
+                    info += f"{address_line}\n"
                 city_state_zip = ""
                 if employee.get('city'):
                     city_state_zip += employee['city']
