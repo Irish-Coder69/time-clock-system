@@ -47,6 +47,7 @@ If a newer release exists, the app will offer to open the release page.
 ## Usage
 
 Run the program:
+
 ```bash
 python time_clock.py
 ```
@@ -89,24 +90,30 @@ python time_clock.py
 ## Data Storage
 
 All data is stored in `time_clock_data.json` in the same directory as the program. This file includes:
+
 - Employee records (ID, name, hourly rate, current status)
 - Time entries (clock in/out times, hours worked, wages)
 
 ## Features Explained
 
 ### Wage Calculation
+
 Wages are automatically calculated when an employee clocks out:
-```
+
+```text
 Wages = Hours Worked × Hourly Rate
 ```
 
 ### Time Tracking
+
 - Clock-in time is recorded when an employee clocks in
 - Clock-out time is recorded when an employee clocks out
 - Hours are calculated in decimal format (e.g., 1.5 hours = 1 hour 30 minutes)
 
 ### Employee Status
+
 The system prevents:
+
 - Clocking in when already clocked in
 - Clocking out when not clocked in
 - Duplicate employee IDs

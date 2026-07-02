@@ -1,3 +1,7 @@
 @echo off
 cd /d "%~dp0"
-start /B pythonw time_clock_gui.py
+if exist ".venv\Scripts\pythonw.exe" (
+	start /B "" ".venv\Scripts\pythonw.exe" time_clock_gui.py
+) else (
+	start /B "" pythonw time_clock_gui.py
+)

@@ -20,9 +20,9 @@ Install these on the build machine:
 1. Update `APP_VERSION` in `time_clock_version.py`.
 2. Run `build_installer.bat`.
 3. The script will:
-	- Build the frozen app in `dist`
-	- Compile Inno Setup (if installed)
-	- Produce `installer_output\TimeClockSetup-<version>.exe`
+   - Build the frozen app in `dist`
+   - Compile Inno Setup (if installed)
+   - Produce `installer_output\TimeClockSetup-<version>.exe`
 
 If Inno Setup is not installed, the script still builds the app and reports that installer compilation was skipped.
 
