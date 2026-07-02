@@ -17,7 +17,7 @@ Install these on the build machine:
 
 ## Build steps
 
-1. Update `APP_VERSION` in `time_clock_version.py`.
+1. Run `bump_version.bat` to increment `APP_VERSION` in `time_clock_version.py`.
 2. Run `build_installer.bat`.
 3. The script will:
    - Build the frozen app in `dist`
@@ -29,7 +29,7 @@ If Inno Setup is not installed, the script still builds the app and reports that
 
 ## Release notes
 
-The update checker reads GitHub Releases, so each new version should be published as a release with a matching tag like `v1.1.2`.
+The update checker reads GitHub Releases, so each new version should be published as a release with a matching tag like `v1.1.3`.
 
 ## Notes
 

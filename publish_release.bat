@@ -25,11 +25,9 @@ echo Publishing GitHub Release %TAG%
 
 gh release view %TAG% >nul 2>&1
 if not errorlevel 1 (
-    echo Release already exists. Updating installer asset.
-    gh release upload %TAG% "%INSTALLER%" --clobber
-    if errorlevel 1 exit /b 1
-    echo Release asset updated successfully.
-    exit /b 0
+    echo Release %TAG% already exists.
+    echo Bump APP_VERSION in time_clock_version.py before publishing a new release.
+    exit /b 1
 )
 
 gh release create %TAG% "%INSTALLER%" --title "Time Clock v%APP_VERSION%" --notes "Time Clock v%APP_VERSION%" --latest

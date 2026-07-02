@@ -38,11 +38,11 @@ If a newer release exists, the app will offer to open the release page.
 
 ## Release process
 
-1. Update `APP_VERSION` in `time_clock_version.py`.
-2. Commit and push your changes to GitHub.
+1. Run `bump_version.bat` to increment `APP_VERSION` in `time_clock_version.py`.
+2. Commit and push the version bump with your code changes.
 3. Build the app and installer with `build_installer.bat`.
-4. Run `publish_release.bat` to create or update the GitHub Release tagged `v<APP_VERSION>`.
-5. If the release already exists, the script replaces the installer asset with the rebuilt one.
+4. Run `publish_release.bat` to create the GitHub Release tagged `v<APP_VERSION>`.
+5. If the tag already exists, bump the version again before publishing.
 
 ## Usage
 
