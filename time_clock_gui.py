@@ -335,6 +335,41 @@ class TimeClockData:
         if employee_id:
             entries = [e for e in entries if e["employee_id"] == employee_id]
         return entries
+
+    def normalize_break_record(self, break_entry: Dict):
+        """Return a break record with the legacy and current field names populated."""
+        start_time = break_entry.get("start_time") or break_entry.get("start")
+        end_time = break_entry.get("end_time") or break_entry.get("end")
+        break_type = break_entry.get("break_type") or break_entry.get("type") or "Unpaid"
+
+        if not start_time or not end_time:
+            return None
+
+        break_start = datetime.fromisoformat(start_time)
+        break_end = datetime.fromisoformat(end_time)
+        duration = (break_end - break_start).total_seconds() / 3600
+
+        return {
+            "start_time": start_time,
+            "end_time": end_time,
+            "break_type": break_type,
+            "start": start_time,
+            "end": end_time,
+            "type": break_type,
+            "duration": round(duration, 2)
+        }
+
+    def calculate_break_hours(self, entry: Dict, unpaid_only: bool = False) -> float:
+        """Calculate break hours for an entry, optionally limiting to unpaid breaks."""
+        total = 0.0
+        for break_entry in entry.get("breaks", []):
+            normalized = self.normalize_break_record(break_entry)
+            if not normalized:
+                continue
+            if unpaid_only and normalized["break_type"] != "Unpaid":
+                continue
+            total += normalized["duration"]
+        return total
     
     def calculate_total_wages(self, employee_id: Optional[str] = None):
         """Calculate total wages"""
@@ -464,10 +499,13 @@ class TimeClockData:
             if "breaks" not in entry:
                 entry["breaks"] = []
             entry["breaks"].append({
+                "start_time": employee["break_start"],
+                "end_time": break_end.isoformat(),
+                "break_type": break_type,
                 "start": employee["break_start"],
                 "end": break_end.isoformat(),
-                "duration": round(break_duration, 2),
-                "type": break_type
+                "type": break_type,
+                "duration": round(break_duration, 2)
             })
         
         employee["on_break"] = False
@@ -492,13 +530,8 @@ class TimeClockData:
             entry_date = datetime.fromisoformat(entry["clock_in"])
             if start_date <= entry_date <= end_date:
                 # Calculate break time
-                break_hours = 0
-                unpaid_break_hours = 0
-                if "breaks" in entry:
-                    for brk in entry["breaks"]:
-                        if brk["type"] == "Unpaid":
-                            unpaid_break_hours += brk["duration"]
-                        break_hours += brk["duration"]
+                break_hours = self.calculate_break_hours(entry)
+                unpaid_break_hours = self.calculate_break_hours(entry, unpaid_only=True)
                 
                 # Calculate regular and overtime hours
                 worked_hours = entry["hours_worked"]
@@ -766,7 +799,7 @@ class TimeClockData:
         self.save_data()
         return True, "Entry deleted successfully!"
     
-    def update_entry(self, entry_index: int, clock_in_time: datetime, clock_out_time: datetime):
+    def update_entry(self, entry_index: int, clock_in_time: datetime, clock_out_time: datetime = None, breaks: Optional[list] = None):
         """Update an existing time entry"""
         if entry_index < 0 or entry_index >= len(self.data["time_entries"]):
             return False, "Invalid entry index!"
@@ -777,22 +810,37 @@ class TimeClockData:
         if not employee:
             return False, "Employee not found!"
         
-        # Validate times
-        if clock_out_time <= clock_in_time:
+        original_clock_out = entry.get("clock_out")
+        effective_clock_out = clock_out_time
+        if effective_clock_out is None and original_clock_out is not None:
+            effective_clock_out = datetime.fromisoformat(original_clock_out)
+
+        if effective_clock_out is not None and effective_clock_out <= clock_in_time:
             return False, "Clock out time must be after clock in time!"
         
-        # Calculate hours worked
-        hours_worked = (clock_out_time - clock_in_time).total_seconds() / 3600
-        
-        # Calculate wages using the rate stored in the entry (historical rate)
-        wages = hours_worked * entry["hourly_rate"]
+        if breaks is not None:
+            entry["breaks"] = breaks
         
         # Update entry
         entry["clock_in"] = clock_in_time.isoformat()
-        entry["clock_out"] = clock_out_time.isoformat()
-        entry["hours_worked"] = round(hours_worked, 2)
-        entry["wages"] = round(wages, 2)
+        if clock_out_time is not None:
+            entry["clock_out"] = clock_out_time.isoformat()
+            hours_worked = (clock_out_time - clock_in_time).total_seconds() / 3600
+            entry["hours_worked"] = round(hours_worked, 2)
+            entry["wages"] = round(hours_worked * entry["hourly_rate"], 2)
+        elif original_clock_out is not None:
+            hours_worked = (effective_clock_out - clock_in_time).total_seconds() / 3600
+            entry["hours_worked"] = round(hours_worked, 2)
+            entry["wages"] = round(hours_worked * entry["hourly_rate"], 2)
+        elif original_clock_out is None:
+            entry["clock_out"] = None
+            entry["hours_worked"] = 0
+            entry["wages"] = 0
         
+        if original_clock_out is None and entry.get("clock_out") is not None:
+            employee["clocked_in"] = False
+            employee["current_entry"] = None
+
         self.save_data()
         
         message = f"Entry updated for {entry['name']}\n"
@@ -2140,11 +2188,10 @@ class TimeClockGUI:
         completed_entries = [
             (i, e)
             for i, e in enumerate(self.data_manager.data["time_entries"])
-            if e["clock_out"] is not None
         ]
         
         if not completed_entries:
-            messagebox.showinfo("No Entries", "No completed time entries to edit.")
+            messagebox.showinfo("No Entries", "No time entries to edit.")
             return
         
         # Entry selection dialog
@@ -2168,7 +2215,7 @@ class TimeClockGUI:
         frame.pack(fill=tk.BOTH, expand=True)
         
         ttk.Label(frame, text="Select Entry to Edit", style='Header.TLabel').pack(pady=(0, 10))
-        ttk.Label(frame, text="All completed time entries are shown below.").pack(pady=(0, 10))
+        ttk.Label(frame, text="All time entries are shown below, including active shifts.").pack(pady=(0, 10))
         
         # Listbox with scrollbar
         list_frame = ttk.Frame(frame)
@@ -2185,8 +2232,13 @@ class TimeClockGUI:
         # Populate listbox
         for idx, (global_idx, entry) in enumerate(completed_entries):
             clock_in = datetime.fromisoformat(entry["clock_in"]).strftime('%m/%d/%Y %I:%M %p')
-            clock_out = datetime.fromisoformat(entry["clock_out"]).strftime('%m/%d/%Y %I:%M %p')
-            display = f"{entry['name']} | {clock_in} - {clock_out} | {entry['hours_worked']:.2f}h | ${entry['wages']:.2f}"
+            if entry.get("clock_out"):
+                clock_out = datetime.fromisoformat(entry["clock_out"]).strftime('%m/%d/%Y %I:%M %p')
+                status = "Closed"
+            else:
+                clock_out = "---"
+                status = "Active"
+            display = f"{entry['name']} | {clock_in} - {clock_out} | {entry['hours_worked']:.2f}h | ${entry['wages']:.2f} | {status}"
             listbox.insert(tk.END, display)
         
         def edit_selected():
@@ -2217,8 +2269,8 @@ class TimeClockGUI:
         dialog.title("Edit Time Entry")
         
         # Calculate center position
-        window_width = 550
-        window_height = 500
+        window_width = 760
+        window_height = 760
         screen_width = dialog.winfo_screenwidth()
         screen_height = dialog.winfo_screenheight()
         center_x = int(screen_width/2 - window_width/2)
@@ -2237,7 +2289,10 @@ class TimeClockGUI:
         
         # Parse existing times
         clock_in_dt = datetime.fromisoformat(entry["clock_in"])
-        clock_out_dt = datetime.fromisoformat(entry["clock_out"])
+        clock_out_dt = datetime.fromisoformat(entry["clock_out"]) if entry.get("clock_out") else datetime.now()
+        entry_is_open = entry.get("clock_out") is None
+        
+        clock_out_active_var = tk.BooleanVar(value=not entry_is_open)
         
         # Project selection
         ttk.Label(frame, text="Project:").grid(row=2, column=0, sticky=tk.W, pady=5)
@@ -2329,6 +2384,17 @@ class TimeClockGUI:
         ttk.Label(frame, text="Clock Out Time:").grid(row=5, column=0, sticky=tk.W, pady=5)
         clock_out_frame = ttk.Frame(frame)
         clock_out_frame.grid(row=5, column=1, sticky=(tk.W, tk.E), pady=5)
+        clock_out_frame.columnconfigure(0, weight=1)
+        clock_out_frame.columnconfigure(1, weight=1)
+        clock_out_frame.columnconfigure(2, weight=1)
+        clock_out_widgets = []
+
+        active_check = ttk.Checkbutton(
+            frame,
+            text="Entry is still open",
+            variable=clock_out_active_var
+        )
+        active_check.grid(row=5, column=2, sticky=tk.W, padx=(10, 0))
         
         out_hour = clock_out_dt.hour
         out_ampm = "AM"
@@ -2343,14 +2409,204 @@ class TimeClockGUI:
         out_minute_var = tk.StringVar(value=f"{clock_out_dt.minute:02d}")
         out_ampm_var = tk.StringVar(value=out_ampm)
         
-        ttk.Combobox(clock_out_frame, textvariable=out_hour_var, values=hours, width=4, state='readonly').pack(side=tk.LEFT, padx=2)
-        ttk.Label(clock_out_frame, text=":").pack(side=tk.LEFT)
-        ttk.Combobox(clock_out_frame, textvariable=out_minute_var, values=minutes, width=4, state='readonly').pack(side=tk.LEFT, padx=2)
-        ttk.Combobox(clock_out_frame, textvariable=out_ampm_var, values=["AM", "PM"], width=4, state='readonly').pack(side=tk.LEFT, padx=2)
+        out_hour_combo = ttk.Combobox(clock_out_frame, textvariable=out_hour_var, values=hours, width=4, state='readonly')
+        out_hour_combo.pack(side=tk.LEFT, padx=2)
+        clock_out_widgets.append(out_hour_combo)
+        out_colon = ttk.Label(clock_out_frame, text=":")
+        out_colon.pack(side=tk.LEFT)
+        clock_out_widgets.append(out_colon)
+        out_minute_combo = ttk.Combobox(clock_out_frame, textvariable=out_minute_var, values=minutes, width=4, state='readonly')
+        out_minute_combo.pack(side=tk.LEFT, padx=2)
+        clock_out_widgets.append(out_minute_combo)
+        out_ampm_combo = ttk.Combobox(clock_out_frame, textvariable=out_ampm_var, values=["AM", "PM"], width=4, state='readonly')
+        out_ampm_combo.pack(side=tk.LEFT, padx=2)
+        clock_out_widgets.append(out_ampm_combo)
+
+        def set_clock_out_state(*_):
+            if clock_out_active_var.get():
+                for widget in clock_out_widgets:
+                    try:
+                        widget.configure(state='readonly')
+                    except tk.TclError:
+                        widget.configure(state='normal')
+            else:
+                for widget in clock_out_widgets:
+                    try:
+                        widget.configure(state='disabled')
+                    except tk.TclError:
+                        pass
+
+        clock_out_active_var.trace_add('write', set_clock_out_state)
+        set_clock_out_state()
+        
+        # Break management
+        ttk.Label(frame, text="Breaks:").grid(row=6, column=0, sticky=tk.NW, pady=5)
+        breaks_frame = ttk.Frame(frame)
+        breaks_frame.grid(row=6, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        breaks_frame.columnconfigure(0, weight=1)
+        breaks_frame.rowconfigure(0, weight=1)
+
+        breaks_listbox = tk.Listbox(breaks_frame, font=('Consolas', 9), bg='#34495e', fg=self.fg_color, selectmode=tk.SINGLE, height=8)
+        breaks_scrollbar = ttk.Scrollbar(breaks_frame, orient=tk.VERTICAL, command=breaks_listbox.yview)
+        breaks_listbox.configure(yscrollcommand=breaks_scrollbar.set)
+        breaks_listbox.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        breaks_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+
+        break_records = []
+        for break_entry in entry.get("breaks", []):
+            normalized_break = self.data_manager.normalize_break_record(break_entry)
+            if normalized_break:
+                break_records.append(normalized_break)
+
+        def refresh_breaks_list():
+            breaks_listbox.delete(0, tk.END)
+            for break_entry in break_records:
+                break_start = datetime.fromisoformat(break_entry["start_time"])
+                break_end = datetime.fromisoformat(break_entry["end_time"])
+                breaks_listbox.insert(
+                    tk.END,
+                    f"{break_entry['break_type']} | {break_start.strftime('%m/%d/%Y %I:%M %p')} - {break_end.strftime('%I:%M %p')} | {break_entry['duration']:.2f}h"
+                )
+
+        def open_break_editor(selected_break_index=None):
+            break_dialog = tk.Toplevel(dialog)
+            break_dialog.title("Edit Break" if selected_break_index is not None else "Add Break")
+            break_dialog.geometry("460x320")
+            break_dialog.configure(bg=self.bg_color)
+            break_dialog.transient(dialog)
+            break_dialog.grab_set()
+
+            break_frame = ttk.Frame(break_dialog, padding="20")
+            break_frame.pack(fill=tk.BOTH, expand=True)
+
+            ttk.Label(break_frame, text="Break Type:").grid(row=0, column=0, sticky=tk.W, pady=5)
+            selected_break = break_records[selected_break_index] if selected_break_index is not None else None
+            break_type_var = tk.StringVar(value=(selected_break or {}).get("break_type", "Unpaid"))
+            ttk.Combobox(break_frame, textvariable=break_type_var, values=["Paid", "Unpaid"], state='readonly', width=20).grid(row=0, column=1, sticky=tk.W, pady=5)
+
+            start_dt = datetime.fromisoformat(selected_break["start_time"]) if selected_break else clock_in_dt
+            end_dt = datetime.fromisoformat(selected_break["end_time"]) if selected_break else (start_dt + timedelta(minutes=15))
+
+            ttk.Label(break_frame, text="Start Date:").grid(row=1, column=0, sticky=tk.W, pady=5)
+            break_start_date = DateEntry(break_frame, width=18, date_pattern='mm/dd/yyyy', firstweekday='sunday')
+            break_start_date.grid(row=1, column=1, sticky=tk.W, pady=5)
+            break_start_date.set_date(start_dt)
+
+            ttk.Label(break_frame, text="Start Time:").grid(row=2, column=0, sticky=tk.W, pady=5)
+            break_start_hour = tk.StringVar(value=str(start_dt.hour % 12 or 12))
+            break_start_minute = tk.StringVar(value=f"{start_dt.minute:02d}")
+            break_start_ampm = tk.StringVar(value="PM" if start_dt.hour >= 12 else "AM")
+            start_time_frame = ttk.Frame(break_frame)
+            start_time_frame.grid(row=2, column=1, sticky=tk.W, pady=5)
+            ttk.Combobox(start_time_frame, textvariable=break_start_hour, values=hours, width=4, state='readonly').pack(side=tk.LEFT, padx=2)
+            ttk.Label(start_time_frame, text=":").pack(side=tk.LEFT)
+            ttk.Combobox(start_time_frame, textvariable=break_start_minute, values=minutes, width=4, state='readonly').pack(side=tk.LEFT, padx=2)
+            ttk.Combobox(start_time_frame, textvariable=break_start_ampm, values=["AM", "PM"], width=4, state='readonly').pack(side=tk.LEFT, padx=2)
+
+            ttk.Label(break_frame, text="End Date:").grid(row=3, column=0, sticky=tk.W, pady=5)
+            break_end_date = DateEntry(break_frame, width=18, date_pattern='mm/dd/yyyy', firstweekday='sunday')
+            break_end_date.grid(row=3, column=1, sticky=tk.W, pady=5)
+            break_end_date.set_date(end_dt)
+
+            ttk.Label(break_frame, text="End Time:").grid(row=4, column=0, sticky=tk.W, pady=5)
+            break_end_hour = tk.StringVar(value=str(end_dt.hour % 12 or 12))
+            break_end_minute = tk.StringVar(value=f"{end_dt.minute:02d}")
+            break_end_ampm = tk.StringVar(value="PM" if end_dt.hour >= 12 else "AM")
+            end_time_frame = ttk.Frame(break_frame)
+            end_time_frame.grid(row=4, column=1, sticky=tk.W, pady=5)
+            ttk.Combobox(end_time_frame, textvariable=break_end_hour, values=hours, width=4, state='readonly').pack(side=tk.LEFT, padx=2)
+            ttk.Label(end_time_frame, text=":").pack(side=tk.LEFT)
+            ttk.Combobox(end_time_frame, textvariable=break_end_minute, values=minutes, width=4, state='readonly').pack(side=tk.LEFT, padx=2)
+            ttk.Combobox(end_time_frame, textvariable=break_end_ampm, values=["AM", "PM"], width=4, state='readonly').pack(side=tk.LEFT, padx=2)
+
+            def save_break():
+                try:
+                    start_date_value = break_start_date.get_date()
+                    end_date_value = break_end_date.get_date()
+
+                    start_hour = int(break_start_hour.get())
+                    start_minute = int(break_start_minute.get())
+                    if break_start_ampm.get() == "PM" and start_hour != 12:
+                        start_hour += 12
+                    elif break_start_ampm.get() == "AM" and start_hour == 12:
+                        start_hour = 0
+
+                    end_hour = int(break_end_hour.get())
+                    end_minute = int(break_end_minute.get())
+                    if break_end_ampm.get() == "PM" and end_hour != 12:
+                        end_hour += 12
+                    elif break_end_ampm.get() == "AM" and end_hour == 12:
+                        end_hour = 0
+
+                    start_dt_value = datetime(
+                        start_date_value.year,
+                        start_date_value.month,
+                        start_date_value.day,
+                        start_hour,
+                        start_minute,
+                    )
+                    end_dt_value = datetime(
+                        end_date_value.year,
+                        end_date_value.month,
+                        end_date_value.day,
+                        end_hour,
+                        end_minute,
+                    )
+
+                    if end_dt_value <= start_dt_value:
+                        messagebox.showerror("Error", "Break end time must be after break start time.")
+                        return
+
+                    normalized_break = self.data_manager.normalize_break_record({
+                        "start_time": start_dt_value.isoformat(),
+                        "end_time": end_dt_value.isoformat(),
+                        "break_type": break_type_var.get(),
+                    })
+
+                    if selected_break_index is None:
+                        break_records.append(normalized_break)
+                    else:
+                        break_records[selected_break_index] = normalized_break
+
+                    refresh_breaks_list()
+                    break_dialog.destroy()
+                except ValueError as exc:
+                    messagebox.showerror("Error", f"Invalid break date or time: {exc}")
+
+            btn_frame = ttk.Frame(break_frame)
+            btn_frame.grid(row=5, column=0, columnspan=2, pady=(15, 0))
+            ttk.Button(btn_frame, text="Save Break", command=save_break).pack(side=tk.LEFT, padx=5)
+            ttk.Button(btn_frame, text="Cancel", command=break_dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        def add_break():
+            open_break_editor()
+
+        def edit_break():
+            if not breaks_listbox.curselection():
+                messagebox.showwarning("No Selection", "Please select a break to edit.")
+                return
+            selected_index = breaks_listbox.curselection()[0]
+            open_break_editor(selected_index)
+
+        def delete_break():
+            if not breaks_listbox.curselection():
+                messagebox.showwarning("No Selection", "Please select a break to delete.")
+                return
+            selected_index = breaks_listbox.curselection()[0]
+            del break_records[selected_index]
+            refresh_breaks_list()
+
+        refresh_breaks_list()
+
+        break_button_frame = ttk.Frame(frame)
+        break_button_frame.grid(row=7, column=0, columnspan=3, pady=(10, 0), sticky=tk.W)
+        ttk.Button(break_button_frame, text="Add Break", command=add_break).pack(side=tk.LEFT, padx=5)
+        ttk.Button(break_button_frame, text="Edit Break", command=edit_break).pack(side=tk.LEFT, padx=5)
+        ttk.Button(break_button_frame, text="Delete Break", command=delete_break).pack(side=tk.LEFT, padx=5)
         
         # Preview
         preview_label = ttk.Label(frame, text="", foreground=self.accent_color, wraplength=350)
-        preview_label.grid(row=6, column=0, columnspan=3, pady=15)
+        preview_label.grid(row=8, column=0, columnspan=3, pady=15)
         
         def update_preview(*args):
             try:
@@ -2365,6 +2621,10 @@ class TimeClockGUI:
                 elif in_ampm_var.get() == "AM" and in_hour == 12:
                     in_hour = 0
                 
+                if not clock_out_active_var.get():
+                    preview_label.config(text="")
+                    return
+
                 out_hour = int(out_hour_var.get())
                 out_minute = int(out_minute_var.get())
                 if out_ampm_var.get() == "PM" and out_hour != 12:
@@ -2387,7 +2647,7 @@ class TimeClockGUI:
                 preview_label.config(text="")
         
         for var in [year_var, month_var, day_var, in_hour_var, in_minute_var, in_ampm_var, 
-                    out_hour_var, out_minute_var, out_ampm_var]:
+                    out_hour_var, out_minute_var, out_ampm_var, clock_out_active_var]:
             var.trace('w', update_preview)
         
         update_preview()
@@ -2405,21 +2665,23 @@ class TimeClockGUI:
                 elif in_ampm_var.get() == "AM" and in_hour == 12:
                     in_hour = 0
                 
-                out_hour = int(out_hour_var.get())
-                out_minute = int(out_minute_var.get())
-                if out_ampm_var.get() == "PM" and out_hour != 12:
-                    out_hour += 12
-                elif out_ampm_var.get() == "AM" and out_hour == 12:
-                    out_hour = 0
-                
                 clock_in = datetime(year, month, day, in_hour, in_minute)
-                clock_out = datetime(year, month, day, out_hour, out_minute)
-                
-                if clock_out <= clock_in:
-                    clock_out = datetime(year, month, day + 1, out_hour, out_minute)
+                clock_out = None
+                if clock_out_active_var.get():
+                    out_hour = int(out_hour_var.get())
+                    out_minute = int(out_minute_var.get())
+                    if out_ampm_var.get() == "PM" and out_hour != 12:
+                        out_hour += 12
+                    elif out_ampm_var.get() == "AM" and out_hour == 12:
+                        out_hour = 0
+                    
+                    clock_out = datetime(year, month, day, out_hour, out_minute)
+                    
+                    if clock_out <= clock_in:
+                        clock_out = datetime(year, month, day + 1, out_hour, out_minute)
                 
                 # Update the time entry
-                success, message = self.data_manager.update_entry(entry_index, clock_in, clock_out)
+                success, message = self.data_manager.update_entry(entry_index, clock_in, clock_out, breaks=break_records)
                 
                 # Update project if changed
                 if success:
@@ -2438,7 +2700,7 @@ class TimeClockGUI:
                 messagebox.showerror("Error", f"Invalid date or time: {str(e)}")
         
         btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=7, column=0, columnspan=3, pady=(10, 0))
+        btn_frame.grid(row=9, column=0, columnspan=3, pady=(10, 0))
         
         ttk.Button(btn_frame, text="Save Changes", command=save_changes).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
@@ -3167,14 +3429,8 @@ class TimeClockGUI:
                 status = "Clocked In"
             
             # Calculate total break time
-            break_time = 0
-            if 'breaks' in entry:
-                for brk in entry['breaks']:
-                    if brk.get('end_time'):
-                        break_start = datetime.fromisoformat(brk['start_time'])
-                        break_end = datetime.fromisoformat(brk['end_time'])
-                        break_time += (break_end - break_start).total_seconds() / 3600
-                total_break_time += break_time
+            break_time = self.data_manager.calculate_break_hours(entry)
+            total_break_time += break_time
             
             break_str = f"{break_time:.2f} hrs" if break_time > 0 else "None"
             
@@ -5830,13 +6086,7 @@ Alt+5 - Employee Management Tab
                 hours = (clock_out - clock_in).total_seconds() / 3600
                 
                 # Subtract break time
-                if 'breaks' in entry:
-                    for break_entry in entry['breaks']:
-                        if break_entry.get('end_time'):
-                            break_start = datetime.fromisoformat(break_entry['start_time'])
-                            break_end = datetime.fromisoformat(break_entry['end_time'])
-                            if break_entry.get('break_type') == 'Unpaid':
-                                hours -= (break_end - break_start).total_seconds() / 3600
+                hours -= self.data_manager.calculate_break_hours(entry, unpaid_only=True)
                 
                 hourly_rate = employee.get('hourly_rate', 0)
                 cost = hours * hourly_rate
