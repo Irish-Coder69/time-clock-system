@@ -2059,7 +2059,7 @@ class TimeClockGUI:
         in_ampm_var = tk.StringVar(value="AM")
         
         hours = [str(h) for h in range(1, 13)]
-        minutes = [f"{m:02d}" for m in range(0, 60, 15)]
+        minutes = [f"{m:02d}" for m in range(0, 60)]
         
         ttk.Combobox(clock_in_frame, textvariable=in_hour_var, values=hours, width=4, state='readonly').pack(side=tk.LEFT, padx=2)
         ttk.Label(clock_in_frame, text=":").pack(side=tk.LEFT)
@@ -2404,7 +2404,7 @@ class TimeClockGUI:
         in_ampm_var = tk.StringVar(value=in_ampm)
         
         hours = [str(h) for h in range(1, 13)]
-        minutes = [f"{m:02d}" for m in range(0, 60, 15)]
+        minutes = [f"{m:02d}" for m in range(0, 60)]
         
         ttk.Combobox(clock_in_frame, textvariable=in_hour_var, values=hours, width=4, state='readonly').pack(side=tk.LEFT, padx=2)
         ttk.Label(clock_in_frame, text=":").pack(side=tk.LEFT)
