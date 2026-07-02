@@ -13,7 +13,39 @@ import webbrowser
 from tkinter import ttk, messagebox, scrolledtext, simpledialog, filedialog
 from datetime import datetime, timedelta
 from typing import Dict, Optional
-from tkcalendar import DateEntry
+
+try:
+    from tkcalendar import DateEntry
+except ImportError:
+    class DateEntry(ttk.Entry):
+        """Fallback date entry when tkcalendar is unavailable."""
+
+        def __init__(self, master=None, **kwargs):
+            self._date_pattern = kwargs.pop("date_pattern", "mm/dd/yyyy")
+            self._date_value = datetime.now().date()
+            super().__init__(master, **kwargs)
+            self._sync_text()
+
+        def _sync_text(self):
+            self.delete(0, tk.END)
+            self.insert(0, self._date_value.strftime("%m/%d/%Y"))
+
+        def set_date(self, value):
+            if isinstance(value, datetime):
+                self._date_value = value.date()
+            else:
+                self._date_value = value
+            self._sync_text()
+
+        def get_date(self):
+            text = self.get().strip()
+            if not text:
+                return self._date_value
+            try:
+                self._date_value = datetime.strptime(text, "%m/%d/%Y").date()
+            except ValueError:
+                pass
+            return self._date_value
 
 from time_clock_paths import get_backup_dir, get_data_file_path
 from time_clock_version import APP_NAME, APP_VERSION, GITHUB_REPO, is_newer_version
