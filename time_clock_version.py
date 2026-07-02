@@ -5,7 +5,7 @@ APP_VERSION = "1.1.0"
 
 # Set this to your GitHub repository in the format "owner/repo".
 # Example: GITHUB_REPO = "judsonfitzpatrick/time-clock"
-GITHUB_REPO = ""
+GITHUB_REPO = "Irish-Coder69/time-clock-system"
 
 
 def parse_version(version: str):
