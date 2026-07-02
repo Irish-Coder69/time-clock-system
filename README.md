@@ -44,6 +44,8 @@ If a newer release exists, the app will offer to open the release page.
 4. Run `publish_release.bat` to create the GitHub Release tagged `v<APP_VERSION>`.
 5. If the tag already exists, bump the version again before publishing.
 
+The installer now packages the app in one directory instead of a single extracted EXE, which avoids startup failures from temp folder DLL loading.
+
 ## Usage
 
 Run the program:
