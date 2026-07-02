@@ -1,7 +1,7 @@
 """Application versioning and update settings."""
 
 APP_NAME = "Time Clock System"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 # Set this to your GitHub repository in the format "owner/repo".
 # Example: GITHUB_REPO = "judsonfitzpatrick/time-clock"
