@@ -2185,12 +2185,12 @@ class TimeClockGUI:
     
     def edit_entry_dialog(self):
         """Open dialog to edit a time entry"""
-        completed_entries = [
+        all_entries = [
             (i, e)
             for i, e in enumerate(self.data_manager.data["time_entries"])
         ]
         
-        if not completed_entries:
+        if not all_entries:
             messagebox.showinfo("No Entries", "No time entries to edit.")
             return
         
@@ -2215,7 +2215,14 @@ class TimeClockGUI:
         frame.pack(fill=tk.BOTH, expand=True)
         
         ttk.Label(frame, text="Select Entry to Edit", style='Header.TLabel').pack(pady=(0, 10))
-        ttk.Label(frame, text="All time entries are shown below, including active shifts.").pack(pady=(0, 10))
+        ttk.Label(frame, text="Active shifts are shown by default.").pack(pady=(0, 10))
+
+        filter_frame = ttk.Frame(frame)
+        filter_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(filter_frame, text="Show:").pack(side=tk.LEFT, padx=(0, 8))
+        status_filter_var = ttk.Combobox(filter_frame, state='readonly', width=12, values=["Active", "Closed", "All"])
+        status_filter_var.set("Active")
+        status_filter_var.pack(side=tk.LEFT)
         
         # Listbox with scrollbar
         list_frame = ttk.Frame(frame)
@@ -2229,25 +2236,49 @@ class TimeClockGUI:
         listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=listbox.yview)
         
-        # Populate listbox
-        for idx, (global_idx, entry) in enumerate(completed_entries):
-            clock_in = datetime.fromisoformat(entry["clock_in"]).strftime('%m/%d/%Y %I:%M %p')
-            if entry.get("clock_out"):
-                clock_out = datetime.fromisoformat(entry["clock_out"]).strftime('%m/%d/%Y %I:%M %p')
-                status = "Closed"
-            else:
-                clock_out = "---"
-                status = "Active"
-            display = f"{entry['name']} | {clock_in} - {clock_out} | {entry['hours_worked']:.2f}h | ${entry['wages']:.2f} | {status}"
-            listbox.insert(tk.END, display)
+        filtered_entries = []
+
+        def get_entry_status(entry):
+            return "Active" if entry.get("clock_out") is None else "Closed"
+
+        def refresh_entries(*_):
+            nonlocal filtered_entries
+            listbox.delete(0, tk.END)
+            filtered_entries = []
+            selected_filter = status_filter_var.get()
+
+            for global_idx, entry in all_entries:
+                status = get_entry_status(entry)
+                if selected_filter != "All" and status != selected_filter:
+                    continue
+
+                clock_in = datetime.fromisoformat(entry["clock_in"]).strftime('%m/%d/%Y %I:%M %p')
+                if entry.get("clock_out"):
+                    clock_out = datetime.fromisoformat(entry["clock_out"]).strftime('%m/%d/%Y %I:%M %p')
+                else:
+                    clock_out = "---"
+
+                display = f"{entry['name']} | {clock_in} - {clock_out} | {entry['hours_worked']:.2f}h | ${entry['wages']:.2f} | {status}"
+                listbox.insert(tk.END, display)
+                filtered_entries.append((global_idx, entry))
+
+            if not filtered_entries:
+                listbox.insert(tk.END, "No entries match the selected filter.")
+
+        status_filter_var.bind('<<ComboboxSelected>>', refresh_entries)
+        refresh_entries()
         
         def edit_selected():
+            if not filtered_entries:
+                messagebox.showinfo("No Entries", "No time entries match the selected filter.")
+                return
+
             if not listbox.curselection():
                 messagebox.showwarning("No Selection", "Please select an entry to edit.")
                 return
             
             selected_idx = listbox.curselection()[0]
-            global_idx, entry = completed_entries[selected_idx]
+            global_idx, entry = filtered_entries[selected_idx]
             select_dialog.destroy()
             self.show_edit_entry_form(global_idx, entry)
         
@@ -2712,14 +2743,13 @@ class TimeClockGUI:
     
     def delete_entry_dialog(self):
         """Open dialog to delete a time entry"""
-        completed_entries = [
+        all_entries = [
             (i, e)
             for i, e in enumerate(self.data_manager.data["time_entries"])
-            if e["clock_out"] is not None
         ]
         
-        if not completed_entries:
-            messagebox.showinfo("No Entries", "No completed time entries to delete.")
+        if not all_entries:
+            messagebox.showinfo("No Entries", "No time entries to delete.")
             return
         
         # Entry selection dialog
@@ -2743,7 +2773,14 @@ class TimeClockGUI:
         frame.pack(fill=tk.BOTH, expand=True)
         
         ttk.Label(frame, text="Select Entry to Delete", style='Header.TLabel').pack(pady=(0, 10))
-        ttk.Label(frame, text="All completed time entries are shown below.").pack(pady=(0, 10))
+        ttk.Label(frame, text="Active shifts are shown by default.").pack(pady=(0, 10))
+
+        filter_frame = ttk.Frame(frame)
+        filter_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(filter_frame, text="Show:").pack(side=tk.LEFT, padx=(0, 8))
+        status_filter_var = ttk.Combobox(filter_frame, state='readonly', width=12, values=["Active", "Closed", "All"])
+        status_filter_var.set("Active")
+        status_filter_var.pack(side=tk.LEFT)
         
         # Listbox with scrollbar
         list_frame = ttk.Frame(frame)
@@ -2757,20 +2794,49 @@ class TimeClockGUI:
         listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=listbox.yview)
         
-        # Populate listbox
-        for idx, (global_idx, entry) in enumerate(completed_entries):
-            clock_in = datetime.fromisoformat(entry["clock_in"]).strftime('%m/%d/%Y %I:%M %p')
-            clock_out = datetime.fromisoformat(entry["clock_out"]).strftime('%m/%d/%Y %I:%M %p')
-            display = f"{entry['name']} | {clock_in} - {clock_out} | {entry['hours_worked']:.2f}h | ${entry['wages']:.2f}"
-            listbox.insert(tk.END, display)
+        filtered_entries = []
+
+        def get_entry_status(entry):
+            return "Active" if entry.get("clock_out") is None else "Closed"
+
+        def refresh_entries(*_):
+            nonlocal filtered_entries
+            listbox.delete(0, tk.END)
+            filtered_entries = []
+            selected_filter = status_filter_var.get()
+
+            for global_idx, entry in all_entries:
+                status = get_entry_status(entry)
+                if selected_filter != "All" and status != selected_filter:
+                    continue
+
+                clock_in = datetime.fromisoformat(entry["clock_in"]).strftime('%m/%d/%Y %I:%M %p')
+                if entry.get("clock_out"):
+                    clock_out = datetime.fromisoformat(entry["clock_out"]).strftime('%m/%d/%Y %I:%M %p')
+                else:
+                    clock_out = "---"
+
+                display = f"{entry['name']} | {clock_in} - {clock_out} | {entry['hours_worked']:.2f}h | ${entry['wages']:.2f} | {status}"
+                listbox.insert(tk.END, display)
+                filtered_entries.append((global_idx, entry))
+
+            if not filtered_entries:
+                listbox.insert(tk.END, "No entries match the selected filter.")
+
+        status_filter_var.bind('<<ComboboxSelected>>', refresh_entries)
+        refresh_entries()
         
         def delete_selected():
+            if not filtered_entries:
+                messagebox.showinfo("No Entries", "No time entries match the selected filter.")
+                return
+
             if not listbox.curselection():
                 messagebox.showwarning("No Selection", "Please select an entry to delete.")
                 return
             
             selected_idx = listbox.curselection()[0]
-            global_idx, entry = completed_entries[selected_idx]
+            global_idx, entry = filtered_entries[selected_idx]
             
             # Confirm deletion
             clock_in = datetime.fromisoformat(entry["clock_in"]).strftime('%m/%d/%Y %I:%M %p')
