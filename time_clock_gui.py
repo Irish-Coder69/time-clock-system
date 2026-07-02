@@ -2137,16 +2137,11 @@ class TimeClockGUI:
     
     def edit_entry_dialog(self):
         """Open dialog to edit a time entry"""
-        selection = self.employee_combo.get()
-        if not selection:
-            messagebox.showwarning("No Selection", "Please select an employee first.")
-            return
-        
-        emp_id = selection.split(' - ')[0]
-        employee = self.data_manager.get_employee(emp_id)
-        entries = self.data_manager.get_time_entries(emp_id)
-        completed_entries = [(i, e) for i, e in enumerate(self.data_manager.data["time_entries"]) 
-                            if e["employee_id"] == emp_id and e["clock_out"] is not None]
+        completed_entries = [
+            (i, e)
+            for i, e in enumerate(self.data_manager.data["time_entries"])
+            if e["clock_out"] is not None
+        ]
         
         if not completed_entries:
             messagebox.showinfo("No Entries", "No completed time entries to edit.")
@@ -2172,7 +2167,8 @@ class TimeClockGUI:
         frame = ttk.Frame(select_dialog, padding="20")
         frame.pack(fill=tk.BOTH, expand=True)
         
-        ttk.Label(frame, text=f"Select Entry to Edit - {employee['name']}", style='Header.TLabel').pack(pady=(0, 10))
+        ttk.Label(frame, text="Select Entry to Edit", style='Header.TLabel').pack(pady=(0, 10))
+        ttk.Label(frame, text="All completed time entries are shown below.").pack(pady=(0, 10))
         
         # Listbox with scrollbar
         list_frame = ttk.Frame(frame)
@@ -2190,7 +2186,7 @@ class TimeClockGUI:
         for idx, (global_idx, entry) in enumerate(completed_entries):
             clock_in = datetime.fromisoformat(entry["clock_in"]).strftime('%m/%d/%Y %I:%M %p')
             clock_out = datetime.fromisoformat(entry["clock_out"]).strftime('%m/%d/%Y %I:%M %p')
-            display = f"{clock_in} - {clock_out} | {entry['hours_worked']:.2f}h | ${entry['wages']:.2f}"
+            display = f"{entry['name']} | {clock_in} - {clock_out} | {entry['hours_worked']:.2f}h | ${entry['wages']:.2f}"
             listbox.insert(tk.END, display)
         
         def edit_selected():
