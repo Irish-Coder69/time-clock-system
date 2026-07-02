@@ -23,8 +23,13 @@ Install these on the build machine:
    - Build the frozen app in `dist`
    - Compile Inno Setup (if installed)
    - Produce `installer_output\TimeClockSetup-<version>.exe`
+4. Run `publish_release.bat` to publish the matching GitHub Release tagged `v<APP_VERSION>`.
 
 If Inno Setup is not installed, the script still builds the app and reports that installer compilation was skipped.
+
+## Release notes
+
+The update checker reads GitHub Releases, so each new version should be published as a release with a matching tag like `v1.1.2`.
 
 ## Notes
 

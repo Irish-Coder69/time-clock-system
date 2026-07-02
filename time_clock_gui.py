@@ -4745,41 +4745,52 @@ Alt+5 - Employee Management Tab
             return
 
         release_page = f"https://github.com/{repo}/releases"
-        release_api = f"https://api.github.com/repos/{repo}/releases/latest"
-        request = urllib.request.Request(
-            release_api,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "TimeClockUpdateChecker"
-            }
-        )
+        release_candidates = []
 
-        try:
-            with urllib.request.urlopen(request, timeout=8) as response:
-                release_data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                open_page = messagebox.askyesno(
-                    "Check for Updates",
-                    f"Could not verify the latest release for {repo}.\n\n"
-                    "Open the GitHub Releases page instead?"
-                )
-                if open_page:
-                    webbrowser.open(release_page)
+        for release_api in (
+            f"https://api.github.com/repos/{repo}/releases/latest",
+            f"https://api.github.com/repos/{repo}/releases?per_page=100",
+        ):
+            request = urllib.request.Request(
+                release_api,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "TimeClockUpdateChecker"
+                }
+            )
+
+            try:
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError:
+                continue
+            except (urllib.error.URLError, TimeoutError):
+                break
+            except json.JSONDecodeError:
+                break
+
+            if isinstance(payload, list):
+                release_candidates = [
+                    release for release in payload
+                    if not release.get("draft") and not release.get("prerelease")
+                ]
+                if release_candidates:
+                    release_data = release_candidates[0]
+                    break
             else:
-                messagebox.showerror("Check for Updates", f"Update check failed (HTTP {exc.code}).")
-            return
-        except (urllib.error.URLError, TimeoutError):
+                release_data = payload
+                break
+        else:
+            release_data = None
+
+        if not release_data:
             open_page = messagebox.askyesno(
                 "Check for Updates",
-                "Could not connect to GitHub to check for updates.\n\n"
+                "GitHub did not return a published release for this repository.\n\n"
                 "Open the GitHub Releases page instead?"
             )
             if open_page:
                 webbrowser.open(release_page)
-            return
-        except json.JSONDecodeError:
-            messagebox.showerror("Check for Updates", "Received invalid update data from GitHub.")
             return
 
         latest_tag = (release_data.get("tag_name") or "").strip()

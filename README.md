@@ -41,8 +41,8 @@ If a newer release exists, the app will offer to open the release page.
 1. Update `APP_VERSION` in `time_clock_version.py`.
 2. Commit and push your changes to GitHub.
 3. Build the app and installer with `build_installer.bat`.
-4. Create a GitHub Release with tag `v<APP_VERSION>`.
-5. Upload the installer from `installer_output`.
+4. Run `publish_release.bat` to create or update the GitHub Release tagged `v<APP_VERSION>`.
+5. If the release already exists, the script replaces the installer asset with the rebuilt one.
 
 ## Usage
 
