@@ -4744,6 +4744,7 @@ Alt+5 - Employee Management Tab
             )
             return
 
+        release_page = f"https://github.com/{repo}/releases"
         release_api = f"https://api.github.com/repos/{repo}/releases/latest"
         request = urllib.request.Request(
             release_api,
@@ -4758,19 +4759,24 @@ Alt+5 - Employee Management Tab
                 release_data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                messagebox.showerror(
+                open_page = messagebox.askyesno(
                     "Check for Updates",
-                    "No GitHub release was found.\n\n"
-                    "Create a GitHub Release with a tag like v1.1.0."
+                    f"Could not verify the latest release for {repo}.\n\n"
+                    "Open the GitHub Releases page instead?"
                 )
+                if open_page:
+                    webbrowser.open(release_page)
             else:
                 messagebox.showerror("Check for Updates", f"Update check failed (HTTP {exc.code}).")
             return
         except (urllib.error.URLError, TimeoutError):
-            messagebox.showerror(
+            open_page = messagebox.askyesno(
                 "Check for Updates",
-                "Could not connect to GitHub. Check your internet connection and try again."
+                "Could not connect to GitHub to check for updates.\n\n"
+                "Open the GitHub Releases page instead?"
             )
+            if open_page:
+                webbrowser.open(release_page)
             return
         except json.JSONDecodeError:
             messagebox.showerror("Check for Updates", "Received invalid update data from GitHub.")
