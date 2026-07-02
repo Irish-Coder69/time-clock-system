@@ -1155,12 +1155,14 @@ class TimeClockGUI:
                                           date_pattern='mm/dd/yyyy',
                                           firstweekday='sunday')
         self.leave_start_date.grid(row=2, column=1, sticky=(tk.W, tk.E), pady=5)
+        self.leave_start_date.set_date(datetime.now())
         
         ttk.Label(left_frame, text="End Date:").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.leave_end_date = DateEntry(left_frame, width=23, 
                                         date_pattern='mm/dd/yyyy',
                                         firstweekday='sunday')
         self.leave_end_date.grid(row=3, column=1, sticky=(tk.W, tk.E), pady=5)
+        self.leave_end_date.set_date(datetime.now())
         
         ttk.Label(left_frame, text="Hours:").grid(row=4, column=0, sticky=tk.W, pady=5)
         self.leave_hours = ttk.Entry(left_frame, width=25)
@@ -3096,9 +3098,9 @@ class TimeClockGUI:
         if success:
             messagebox.showinfo("Success", message)
             self.refresh_leave_requests()
-            # Clear form
-            self.leave_start_date.delete(0, tk.END)
-            self.leave_end_date.delete(0, tk.END)
+            # Reset form while keeping valid dates
+            self.leave_start_date.set_date(datetime.now())
+            self.leave_end_date.set_date(datetime.now())
             self.leave_hours.delete(0, tk.END)
             self.leave_reason.delete('1.0', tk.END)
         else:
