@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tkinter as tk
+from pathlib import Path
 import urllib.error
 import urllib.request
 import webbrowser
@@ -4649,13 +4650,42 @@ Alt+5 - Employee Management Tab
             return
 
         if is_newer_version(latest_version, APP_VERSION):
-            should_open = messagebox.askyesno(
+            assets = release_data.get("assets") or []
+            installer_asset = next(
+                (
+                    asset for asset in assets
+                    if (asset.get("name") or "").lower().endswith(".exe")
+                    and "setup" in (asset.get("name") or "").lower()
+                ),
+                None,
+            )
+            if installer_asset is None:
+                installer_asset = next(
+                    (asset for asset in assets if (asset.get("name") or "").lower().endswith(".exe")),
+                    None,
+                )
+
+            action = messagebox.askyesnocancel(
                 "Update Available",
                 f"Current version: {APP_VERSION}\n"
                 f"Latest version:  {latest_version}\n\n"
-                "Open the GitHub release page now?"
+                "Yes: Download installer now\n"
+                "No: Open release page\n"
+                "Cancel: Do nothing"
             )
-            if should_open:
+
+            if action is True:
+                if installer_asset:
+                    self.download_release_asset(installer_asset)
+                else:
+                    should_open = messagebox.askyesno(
+                        "Installer Not Found",
+                        "No installer (.exe) asset was found in this release.\n\n"
+                        "Open the release page instead?"
+                    )
+                    if should_open:
+                        webbrowser.open(release_url)
+            elif action is False:
                 webbrowser.open(release_url)
             return
 
@@ -4664,6 +4694,50 @@ Alt+5 - Employee Management Tab
             f"{APP_NAME} v{APP_VERSION}\n\n"
             "You are running the latest version."
         )
+
+    def download_release_asset(self, asset: Dict):
+        """Download a release asset to a user-selected location."""
+        asset_name = asset.get("name") or "TimeClockSetup.exe"
+        asset_url = asset.get("browser_download_url")
+        if not asset_url:
+            messagebox.showerror("Download Update", "The selected release asset has no download URL.")
+            return
+
+        default_dir = Path.home() / "Downloads"
+        save_path = filedialog.asksaveasfilename(
+            title="Save Installer As",
+            initialdir=str(default_dir),
+            initialfile=asset_name,
+            defaultextension=".exe",
+            filetypes=[("Installer", "*.exe"), ("All Files", "*.*")],
+        )
+        if not save_path:
+            return
+
+        request = urllib.request.Request(
+            asset_url,
+            headers={
+                "Accept": "application/octet-stream",
+                "User-Agent": "TimeClockUpdateChecker"
+            }
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response, open(save_path, "wb") as output_file:
+                shutil.copyfileobj(response, output_file)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            messagebox.showerror("Download Update", f"Could not download installer:\n{exc}")
+            return
+
+        should_run = messagebox.askyesno(
+            "Download Complete",
+            f"Installer downloaded to:\n{save_path}\n\nRun it now?"
+        )
+        if should_run:
+            try:
+                os.startfile(save_path)
+            except OSError as exc:
+                messagebox.showerror("Run Installer", f"Could not launch installer:\n{exc}")
     
     def about_dialog(self):
         """Show about dialog"""
