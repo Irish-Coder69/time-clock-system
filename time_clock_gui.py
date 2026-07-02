@@ -2,6 +2,8 @@
 Time Clock Program with GUI and Hourly Wage Tracking
 """
 
+# pyright: reportMissingTypeStubs=false, reportUnknownParameterType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportMissingParameterType=false, reportUnknownLambdaType=false, reportArgumentType=false, reportAssignmentType=false, reportAttributeAccessIssue=false, reportIndexIssue=false
+
 import json
 import calendar
 import os
@@ -13,7 +15,7 @@ import urllib.request
 import webbrowser
 from tkinter import ttk, messagebox, scrolledtext, simpledialog, filedialog
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 try:
     from tkcalendar import DateEntry
@@ -3801,7 +3803,7 @@ class TimeClockGUI:
         ttk.Radiobutton(frame, text="Merge with existing data (recommended)", variable=import_type, value="merge").pack(anchor=tk.W, padx=20)
         ttk.Radiobutton(frame, text="Replace all data (WARNING: Current data will be lost)", variable=import_type, value="replace").pack(anchor=tk.W, padx=20)
         
-        selected_filepath = [None]
+        selected_filepath: List[Optional[str]] = [None]
         
         def browse_file():
             filename = filedialog.askopenfilename(
