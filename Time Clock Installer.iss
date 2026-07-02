@@ -20,6 +20,8 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
+CloseApplications=no
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -36,3 +38,20 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function InitializeSetup(): Boolean;
+var
+	ResultCode: Integer;
+begin
+	// Close only the installed Time Clock app if it is running.
+	Exec(
+		ExpandConstant('{cmd}'),
+		'/C taskkill /IM "{#MyAppExeName}" /F >NUL 2>NUL',
+		'',
+		SW_HIDE,
+		ewWaitUntilTerminated,
+		ResultCode
+	);
+	Result := True;
+end;
