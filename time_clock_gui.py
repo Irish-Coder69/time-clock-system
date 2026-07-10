@@ -167,6 +167,53 @@ from time_clock_paths import get_backup_dir, get_data_file_path
 from time_clock_version import APP_NAME, APP_VERSION, GITHUB_REPO, is_newer_version
 
 
+def format_date_display(value) -> str:
+    """Convert common date inputs to mm/dd/yyyy for UI display."""
+    if value in (None, ""):
+        return "N/A"
+
+    if isinstance(value, datetime):
+        return value.strftime("%m/%d/%Y")
+
+    text = str(value).strip()
+    for pattern in ("%m/%d/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %I:%M:%S %p"):
+        try:
+            return datetime.strptime(text, pattern).strftime("%m/%d/%Y")
+        except ValueError:
+            continue
+
+    try:
+        return datetime.fromisoformat(text).strftime("%m/%d/%Y")
+    except ValueError:
+        return text
+
+
+def format_datetime_display(value) -> str:
+    """Convert common datetime inputs to mm/dd/yyyy hh:mm:ss AM/PM for UI display."""
+    if value in (None, ""):
+        return "Unknown"
+
+    if isinstance(value, datetime):
+        return value.strftime("%m/%d/%Y %I:%M:%S %p")
+
+    text = str(value).strip()
+    suffix = ""
+    if text.endswith(" (edited)"):
+        text = text[:-9]
+        suffix = " (edited)"
+
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %I:%M:%S %p", "%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, pattern).strftime("%m/%d/%Y %I:%M:%S %p") + suffix
+        except ValueError:
+            continue
+
+    try:
+        return datetime.fromisoformat(text).strftime("%m/%d/%Y %I:%M:%S %p") + suffix
+    except ValueError:
+        return str(value)
+
+
 class TimeClockData:
     def __init__(self, data_file: str = None):
         self.data_file = data_file if data_file is not None else get_data_file_path()
@@ -215,7 +262,7 @@ class TimeClockData:
         full_name = f"{first_name} {middle_name} {last_name}" if middle_name else f"{first_name} {last_name}"
         
         if hire_date is None:
-            hire_date = datetime.now().strftime('%Y-%m-%d')
+            hire_date = datetime.now().strftime('%m/%d/%Y')
         
         self.data["employees"][employee_id] = {
             "first_name": first_name,
@@ -283,7 +330,7 @@ class TimeClockData:
         self.data["time_entries"].append(entry)
         self.save_data()
         
-        time_str = datetime.fromisoformat(clock_in_time).strftime('%Y-%m-%d %I:%M:%S %p')
+        time_str = datetime.fromisoformat(clock_in_time).strftime('%m/%d/%Y %I:%M:%S %p')
         return True, f"{employee['name']} clocked in at {time_str}"
     
     def clock_out(self, employee_id: str):
@@ -319,7 +366,7 @@ class TimeClockData:
         
         self.save_data()
         
-        time_str = clock_out_dt.strftime('%Y-%m-%d %I:%M:%S %p')
+        time_str = clock_out_dt.strftime('%m/%d/%Y %I:%M:%S %p')
         message = f"{employee['name']} clocked out at {time_str}\n\n"
         message += f"Hours worked: {entry['hours_worked']:.2f}\n"
         message += f"Hourly rate: ${entry['hourly_rate']:.2f}\n"
@@ -557,7 +604,7 @@ class TimeClockData:
                 report_entries.append({
                     "employee_id": entry["employee_id"],
                     "name": entry["name"],
-                    "date": entry_date.strftime('%Y-%m-%d'),
+                    "date": entry_date.strftime('%m/%d/%Y'),
                     "clock_in": entry["clock_in"],
                     "clock_out": entry["clock_out"],
                     "total_hours": worked_hours,
@@ -646,7 +693,7 @@ class TimeClockData:
             "hours": hours,
             "reason": reason,
             "status": "Pending",
-            "submitted_date": datetime.now().strftime('%Y-%m-%d'),
+            "submitted_date": datetime.now().strftime('%m/%d/%Y'),
             "approved_by": None,
             "approved_date": None
         }
@@ -676,7 +723,7 @@ class TimeClockData:
         
         request["status"] = "Approved"
         request["approved_by"] = approver_name
-        request["approved_date"] = datetime.now().strftime('%Y-%m-%d')
+        request["approved_date"] = datetime.now().strftime('%m/%d/%Y')
         
         self.save_data()
         return True, f"Leave request approved! {request['hours']} hours deducted from {request['leave_type']} balance"
@@ -693,7 +740,7 @@ class TimeClockData:
         
         request["status"] = "Denied"
         request["approved_by"] = approver_name
-        request["approved_date"] = datetime.now().strftime('%Y-%m-%d')
+        request["approved_date"] = datetime.now().strftime('%m/%d/%Y')
         request["denial_reason"] = reason
         
         self.save_data()
@@ -1316,7 +1363,7 @@ class TimeClockGUI:
         """Update the clock display"""
         now = datetime.now()
         time_str = now.strftime("%I:%M:%S %p")
-        date_str = now.strftime("%A, %B %d, %Y")
+        date_str = now.strftime("%m/%d/%Y")
         self.clock_label.config(text=f"{date_str} | {time_str}")
         self.root.after(1000, self.update_clock)
     
@@ -1363,7 +1410,7 @@ class TimeClockGUI:
             
             # Basic info
             self.employee_list_text.insert(tk.END, f"Department: {emp.get('department', 'N/A'):<30} Job Title: {emp.get('job_title', 'N/A')}\n")
-            self.employee_list_text.insert(tk.END, f"Type: {emp.get('employee_type', 'Full-Time'):<30} Hire Date: {emp.get('hire_date', 'N/A')}\n")
+            self.employee_list_text.insert(tk.END, f"Type: {emp.get('employee_type', 'Full-Time'):<30} Hire Date: {format_date_display(emp.get('hire_date'))}\n")
             self.employee_list_text.insert(tk.END, f"Hourly Rate: ${emp.get('hourly_rate', 0):.2f}/hr\n")
             
             # Contact info
@@ -1452,7 +1499,7 @@ class TimeClockGUI:
                 entry = self.data_manager.data["time_entries"][employee["current_entry"]]
                 clock_in_dt = datetime.fromisoformat(entry["clock_in"])
                 info += f"\nClocked in at:\n{clock_in_dt.strftime('%I:%M:%S %p')}\n"
-                info += f"{clock_in_dt.strftime('%B %d, %Y')}"
+                info += f"{clock_in_dt.strftime('%m/%d/%Y')}"
             
             self.info_text.insert('1.0', info)
         
@@ -1479,7 +1526,7 @@ class TimeClockGUI:
             self.entries_text.insert(tk.END, f"{'='*60}\n")
             
             clock_in_dt = datetime.fromisoformat(entry["clock_in"])
-            self.entries_text.insert(tk.END, f"Clock In:  {clock_in_dt.strftime('%Y-%m-%d %I:%M:%S %p')}\n")
+            self.entries_text.insert(tk.END, f"Clock In:  {clock_in_dt.strftime('%m/%d/%Y %I:%M:%S %p')}\n")
             
             # Display project if available
             if entry.get("project"):
@@ -1487,7 +1534,7 @@ class TimeClockGUI:
             
             if entry["clock_out"]:
                 clock_out_dt = datetime.fromisoformat(entry["clock_out"])
-                self.entries_text.insert(tk.END, f"Clock Out: {clock_out_dt.strftime('%Y-%m-%d %I:%M:%S %p')}\n")
+                self.entries_text.insert(tk.END, f"Clock Out: {clock_out_dt.strftime('%m/%d/%Y %I:%M:%S %p')}\n")
                 self.entries_text.insert(tk.END, f"Hours:     {entry['hours_worked']:.2f} hrs\n")
                 self.entries_text.insert(tk.END, f"Rate:      ${entry['hourly_rate']:.2f}/hr\n")
                 self.entries_text.insert(tk.END, f"Wages:     ${entry['wages']:.2f}\n")
@@ -1795,6 +1842,12 @@ class TimeClockGUI:
             try:
                 hire_date_obj = datetime.strptime(employee['hire_date'], '%m/%d/%Y')
                 hire_date_picker.set_date(hire_date_obj)
+            except ValueError:
+                try:
+                    hire_date_obj = datetime.strptime(employee['hire_date'], '%Y-%m-%d')
+                    hire_date_picker.set_date(hire_date_obj)
+                except ValueError:
+                    pass
             except:
                 pass
         
@@ -3010,7 +3063,7 @@ class TimeClockGUI:
         
         # Header
         report = f"{'='*120}\n"
-        report += f"PAYROLL REPORT - {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}\n"
+        report += f"PAYROLL REPORT - {start_date.strftime('%m/%d/%Y')} to {end_date.strftime('%m/%d/%Y')}\n"
         report += f"{'='*120}\n\n"
         
         # Column headers
@@ -3140,7 +3193,7 @@ class TimeClockGUI:
             report += f"Dates:      {req['start_date']} to {req['end_date']}\n"
             report += f"Hours:      {req['hours']}\n"
             report += f"Reason:     {req['reason']}\n"
-            report += f"Submitted:  {req['submitted_date']}\n"
+            report += f"Submitted:  {format_date_display(req.get('submitted_date'))}\n"
             report += f"{'-'*80}\n\n"
         
         self.leave_requests_text.insert('1.0', report)
@@ -3533,7 +3586,7 @@ class TimeClockGUI:
                 if req['status'] == 'Denied' and req.get('denial_reason'):
                     status_display = f"Denied*"
                 
-                report += f"{req['leave_type']:<12} {req['start_date']:<12} {req['end_date']:<12} {req['hours']:<8.1f} {status_display:<12} {req.get('approved_by', 'N/A'):<20} {req.get('approved_date', 'N/A'):<12}\n"
+                report += f"{req['leave_type']:<12} {req['start_date']:<12} {req['end_date']:<12} {req['hours']:<8.1f} {status_display:<12} {req.get('approved_by', 'N/A'):<20} {format_date_display(req.get('approved_date')):<12}\n"
                 
                 if req['status'] == 'Denied' and req.get('denial_reason'):
                     report += f"  Reason: {req['denial_reason']}\n"
@@ -4655,8 +4708,20 @@ class TimeClockGUI:
                     # Try standard format
                     return datetime.strptime(dt_string, '%Y-%m-%d %H:%M:%S')
                 except:
-                    # Return current time if parsing fails
-                    return datetime.now()
+                    try:
+                        return datetime.strptime(dt_string, '%m/%d/%Y %H:%M:%S')
+                    except:
+                        try:
+                            return datetime.strptime(dt_string, '%m/%d/%Y %I:%M:%S %p')
+                        except:
+                            try:
+                                return datetime.strptime(dt_string, '%m/%d/%Y')
+                            except:
+                                try:
+                                    return datetime.strptime(dt_string, '%Y-%m-%d')
+                                except:
+                                    # Return current time if parsing fails
+                                    return datetime.now()
         
         def generate_log():
             text.delete('1.0', tk.END)
@@ -4753,7 +4818,7 @@ class TimeClockGUI:
             
             # Display entries
             for entry in log_entries:
-                timestamp_str = entry['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+                timestamp_str = entry['timestamp'].strftime('%m/%d/%Y %I:%M:%S %p')
                 line = f"{timestamp_str:<20} {entry['type']:<20} {entry['message']}\n"
                 text.insert(tk.END, line)
             
@@ -5674,7 +5739,7 @@ Alt+5 - Employee Management Tab
                 notes_text.insert(tk.END, f"{'─'*140}\n")
                 notes_text.insert(tk.END, f"Project:       {note.get('project', 'Unknown')}\n")
                 notes_text.insert(tk.END, f"Employee:      {note.get('employee_name', 'Unknown')}\n")
-                notes_text.insert(tk.END, f"Date/Time:     {note.get('timestamp', 'Unknown')}\n")
+                notes_text.insert(tk.END, f"Date/Time:     {format_datetime_display(note.get('timestamp', 'Unknown'))}\n")
                 notes_text.insert(tk.END, f"{'─'*140}\n")
                 notes_text.insert(tk.END, f"{note.get('note', '')}\n")
                 notes_text.insert(tk.END, f"{'─'*140}\n\n")
@@ -5758,7 +5823,7 @@ Alt+5 - Employee Management Tab
                     "employee_id": emp_id,
                     "employee_name": employee_name,
                     "note": note_content,
-                    "timestamp": note_datetime.strftime('%Y-%m-%d %H:%M:%S')
+                    "timestamp": note_datetime.strftime('%m/%d/%Y %I:%M:%S %p')
                 }
                 
                 project_notes.append(new_note)
@@ -5797,7 +5862,7 @@ Alt+5 - Employee Management Tab
             listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
             
             for note in project_notes:
-                display_text = f"#{note.get('id', 0)} | {note.get('project', 'Unknown')} | {note.get('employee_name', 'Unknown')} | {note.get('timestamp', 'Unknown')}"
+                display_text = f"#{note.get('id', 0)} | {note.get('project', 'Unknown')} | {note.get('employee_name', 'Unknown')} | {format_datetime_display(note.get('timestamp', 'Unknown'))}"
                 listbox.insert(tk.END, display_text)
             
             def edit_selected():
@@ -5828,7 +5893,7 @@ Alt+5 - Employee Management Tab
                 proj_label.grid(row=2, column=1, sticky=tk.W, pady=5)
                 
                 ttk.Label(edit_frame, text="Original Date:").grid(row=3, column=0, sticky=tk.W, pady=5)
-                time_label = ttk.Label(edit_frame, text=note.get('timestamp', 'Unknown'))
+                time_label = ttk.Label(edit_frame, text=format_datetime_display(note.get('timestamp', 'Unknown')))
                 time_label.grid(row=3, column=1, sticky=tk.W, pady=5)
                 
                 ttk.Label(edit_frame, text="New Date:").grid(row=4, column=0, sticky=tk.W, pady=5)
@@ -5856,7 +5921,7 @@ Alt+5 - Employee Management Tab
                     note_datetime = datetime.combine(selected_date, current_time)
                     
                     note['note'] = note_content
-                    note['timestamp'] = note_datetime.strftime('%Y-%m-%d %H:%M:%S') + " (edited)"
+                    note['timestamp'] = note_datetime.strftime('%m/%d/%Y %I:%M:%S %p') + " (edited)"
                     
                     self.data_manager.save_data()
                     refresh_notes()
@@ -5897,7 +5962,7 @@ Alt+5 - Employee Management Tab
             listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
             
             for note in project_notes:
-                display_text = f"#{note.get('id', 0)} | {note.get('project', 'Unknown')} | {note.get('employee_name', 'Unknown')} | {note.get('timestamp', 'Unknown')}"
+                display_text = f"#{note.get('id', 0)} | {note.get('project', 'Unknown')} | {note.get('employee_name', 'Unknown')} | {format_datetime_display(note.get('timestamp', 'Unknown'))}"
                 listbox.insert(tk.END, display_text)
             
             def delete_selected():
@@ -5910,7 +5975,7 @@ Alt+5 - Employee Management Tab
                 
                 response = messagebox.askyesno(
                     "Confirm Delete",
-                    f"Are you sure you want to delete this note?\n\nProject: {note.get('project', 'Unknown')}\nEmployee: {note.get('employee_name', 'Unknown')}\nDate: {note.get('timestamp', 'Unknown')}"
+                    f"Are you sure you want to delete this note?\n\nProject: {note.get('project', 'Unknown')}\nEmployee: {note.get('employee_name', 'Unknown')}\nDate: {format_datetime_display(note.get('timestamp', 'Unknown'))}"
                 )
                 
                 if response:
