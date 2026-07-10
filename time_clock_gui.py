@@ -422,16 +422,118 @@ class TimeClockData:
                 continue
             total += normalized["duration"]
         return total
+
+    def _week_start_date(self, dt_value: datetime):
+        """Return the Monday date for the week containing dt_value."""
+        day_value = dt_value.date()
+        return day_value - timedelta(days=day_value.weekday())
+
+    def _calculate_work_entry_pay(self, entries: List[Dict]):
+        """Calculate regular/overtime allocation using 8-hour day and 40-hour week rules."""
+        processed = []
+        for entry in entries:
+            if entry.get("clock_out") is None:
+                continue
+
+            clock_in_dt = datetime.fromisoformat(entry["clock_in"])
+            worked_hours = float(entry.get("hours_worked", 0) or 0)
+            unpaid_break_hours = self.calculate_break_hours(entry, unpaid_only=True)
+            break_hours = self.calculate_break_hours(entry)
+            net_hours = max(0.0, worked_hours - unpaid_break_hours)
+
+            processed.append({
+                "entry": entry,
+                "employee_id": entry.get("employee_id"),
+                "clock_in_dt": clock_in_dt,
+                "week_start": self._week_start_date(clock_in_dt),
+                "worked_hours": worked_hours,
+                "break_hours": break_hours,
+                "unpaid_break_hours": unpaid_break_hours,
+                "net_hours": net_hours,
+            })
+
+        # Process by employee then by time so weekly thresholds are applied in order.
+        processed.sort(key=lambda x: (x["employee_id"] or "", x["clock_in_dt"]))
+
+        weekly_regular_hours = {}
+        for item in processed:
+            emp_id = item["employee_id"]
+            week_key = (emp_id, item["week_start"])
+            regular_so_far = weekly_regular_hours.get(week_key, 0.0)
+
+            # Rule 1: Daily overtime for net hours beyond 8.
+            daily_ot = max(0.0, item["net_hours"] - 8.0)
+            daily_regular = item["net_hours"] - daily_ot
+
+            # Rule 2: Weekly overtime for regular hours beyond 40 in the same week.
+            remaining_regular_week = max(0.0, 40.0 - regular_so_far)
+            weekly_ot_from_regular = max(0.0, daily_regular - remaining_regular_week)
+
+            regular_hours = daily_regular - weekly_ot_from_regular
+            overtime_hours = daily_ot + weekly_ot_from_regular
+
+            weekly_regular_hours[week_key] = regular_so_far + regular_hours
+
+            item["regular_hours"] = round(regular_hours, 2)
+            item["overtime_hours"] = round(overtime_hours, 2)
+
+        return processed
     
     def calculate_total_wages(self, employee_id: Optional[str] = None):
         """Calculate total wages"""
         entries = self.get_time_entries(employee_id)
-        completed_entries = [e for e in entries if e["clock_out"] is not None]
-        
-        total_hours = sum(e["hours_worked"] for e in completed_entries)
-        total_wages = sum(e["wages"] for e in completed_entries)
-        
-        return total_hours, total_wages, len(completed_entries)
+        work_items = self._calculate_work_entry_pay(entries)
+
+        total_hours = sum(item["worked_hours"] for item in work_items)
+        total_wages = 0.0
+
+        for item in work_items:
+            entry = item["entry"]
+            emp = self.data["employees"].get(entry["employee_id"])
+            hourly_rate = float(entry.get("hourly_rate", 0) or 0)
+            overtime_rate = emp.get("overtime_rate", hourly_rate * 1.5) if emp else hourly_rate * 1.5
+
+            total_wages += (item["regular_hours"] * hourly_rate) + (item["overtime_hours"] * overtime_rate)
+
+        return total_hours, round(total_wages, 2), len(work_items)
+
+    def recalculate_all_entry_wages(self):
+        """Recalculate stored wages for all closed entries using overtime rules."""
+        entries = self.data.get("time_entries", [])
+        work_items = self._calculate_work_entry_pay(entries)
+
+        updated_count = 0
+        unchanged_count = 0
+        total_before = 0.0
+        total_after = 0.0
+
+        for item in work_items:
+            entry = item["entry"]
+            emp = self.data["employees"].get(entry.get("employee_id"))
+            hourly_rate = float(entry.get("hourly_rate", 0) or 0)
+            overtime_rate = emp.get("overtime_rate", hourly_rate * 1.5) if emp else hourly_rate * 1.5
+
+            new_wage = round((item["regular_hours"] * hourly_rate) + (item["overtime_hours"] * overtime_rate), 2)
+            old_wage = round(float(entry.get("wages", 0) or 0), 2)
+
+            total_before += old_wage
+            total_after += new_wage
+
+            if new_wage != old_wage:
+                entry["wages"] = new_wage
+                updated_count += 1
+            else:
+                unchanged_count += 1
+
+        self.save_data()
+        return {
+            "processed": len(work_items),
+            "updated": updated_count,
+            "unchanged": unchanged_count,
+            "total_before": round(total_before, 2),
+            "total_after": round(total_after, 2),
+            "difference": round(total_after - total_before, 2),
+        }
     
     def add_manual_entry(self, employee_id: str, clock_in_time: datetime, clock_out_time: datetime, project: str = "General"):
         """Manually add a past time entry"""
@@ -574,52 +676,42 @@ class TimeClockData:
         """Generate payroll report for a date range"""
         entries = self.get_time_entries(employee_id)
         report_entries = []
-        
-        for entry in entries:
-            if entry["clock_out"] is None:
+
+        work_items = self._calculate_work_entry_pay(entries)
+        for item in work_items:
+            entry = item["entry"]
+            entry_date = item["clock_in_dt"]
+
+            if not (start_date <= entry_date <= end_date):
                 continue
-            
-            entry_date = datetime.fromisoformat(entry["clock_in"])
-            if start_date <= entry_date <= end_date:
-                # Calculate break time
-                break_hours = self.calculate_break_hours(entry)
-                unpaid_break_hours = self.calculate_break_hours(entry, unpaid_only=True)
-                
-                # Calculate regular and overtime hours
-                worked_hours = entry["hours_worked"]
-                net_hours = worked_hours - unpaid_break_hours
-                
-                # Determine regular vs overtime (40 hour week threshold)
-                regular_hours = min(net_hours, 40)
-                overtime_hours = max(0, net_hours - 40)
-                
-                # Get employee for overtime rate
-                emp = self.data["employees"].get(entry["employee_id"])
-                ot_rate = emp.get("overtime_rate", entry["hourly_rate"] * 1.5) if emp else entry["hourly_rate"] * 1.5
-                
-                regular_pay = regular_hours * entry["hourly_rate"]
-                overtime_pay = overtime_hours * ot_rate
-                gross_pay = regular_pay + overtime_pay
-                
-                report_entries.append({
-                    "employee_id": entry["employee_id"],
-                    "name": entry["name"],
-                    "date": entry_date.strftime('%m/%d/%Y'),
-                    "clock_in": entry["clock_in"],
-                    "clock_out": entry["clock_out"],
-                    "total_hours": worked_hours,
-                    "break_hours": break_hours,
-                    "unpaid_break_hours": unpaid_break_hours,
-                    "net_hours": net_hours,
-                    "regular_hours": regular_hours,
-                    "overtime_hours": overtime_hours,
-                    "hourly_rate": entry["hourly_rate"],
-                    "overtime_rate": ot_rate,
-                    "regular_pay": round(regular_pay, 2),
-                    "overtime_pay": round(overtime_pay, 2),
-                    "gross_pay": round(gross_pay, 2),
-                    "entry_type": "work"
-                })
+
+            emp = self.data["employees"].get(entry["employee_id"])
+            hourly_rate = float(entry.get("hourly_rate", 0) or 0)
+            ot_rate = emp.get("overtime_rate", hourly_rate * 1.5) if emp else hourly_rate * 1.5
+
+            regular_pay = item["regular_hours"] * hourly_rate
+            overtime_pay = item["overtime_hours"] * ot_rate
+            gross_pay = regular_pay + overtime_pay
+
+            report_entries.append({
+                "employee_id": entry["employee_id"],
+                "name": entry["name"],
+                "date": entry_date.strftime('%m/%d/%Y'),
+                "clock_in": entry["clock_in"],
+                "clock_out": entry["clock_out"],
+                "total_hours": round(item["worked_hours"], 2),
+                "break_hours": round(item["break_hours"], 2),
+                "unpaid_break_hours": round(item["unpaid_break_hours"], 2),
+                "net_hours": round(item["net_hours"], 2),
+                "regular_hours": item["regular_hours"],
+                "overtime_hours": item["overtime_hours"],
+                "hourly_rate": hourly_rate,
+                "overtime_rate": ot_rate,
+                "regular_pay": round(regular_pay, 2),
+                "overtime_pay": round(overtime_pay, 2),
+                "gross_pay": round(gross_pay, 2),
+                "entry_type": "work"
+            })
         
         # Add approved leave requests as paid time
         leave_requests = self.data.get("leave_requests", [])
@@ -976,6 +1068,7 @@ class TimeClockGUI:
         tools_menu.add_command(label="Backup/Restore Database", command=self.backup_restore_db)
         tools_menu.add_command(label="Clear Old Data", command=self.clear_old_data)
         tools_menu.add_command(label="Recalculate Balances", command=self.recalculate_balances)
+        tools_menu.add_command(label="Recalculate Entry Wages", command=self.recalculate_entry_wages)
         tools_menu.add_command(label="Manage Departments", command=self.manage_departments)
         
         # Admin menu
@@ -3501,6 +3594,7 @@ class TimeClockGUI:
         
         # Get time entries
         entries = [entry for entry in self.data_manager.data["time_entries"] if entry['employee_id'] == emp_id and entry.get('clock_out')]
+        pay_by_entry = {id(item["entry"]): item for item in self.data_manager._calculate_work_entry_pay(entries)}
         if entries:
             report += f"{'='*80}\n"
             report += f"TIME ENTRIES\n"
@@ -3512,7 +3606,12 @@ class TimeClockGUI:
                 clock_in = datetime.fromisoformat(entry['clock_in'])
                 clock_out = datetime.fromisoformat(entry['clock_out'])
                 hours = entry.get('hours_worked', 0)
-                wages = hours * employee['hourly_rate']
+                pay_item = pay_by_entry.get(id(entry))
+                ot_rate = employee.get('overtime_rate', employee['hourly_rate'] * 1.5)
+                if pay_item:
+                    wages = (pay_item['regular_hours'] * employee['hourly_rate']) + (pay_item['overtime_hours'] * ot_rate)
+                else:
+                    wages = hours * employee['hourly_rate']
                 report += f"{clock_in.strftime('%m/%d/%Y'):<12} {clock_in.strftime('%I:%M %p'):<10} {clock_out.strftime('%I:%M %p'):<10} {hours:<8.2f} ${wages:<9.2f}\n"
         
         self.report_text.insert('1.0', report)
@@ -4441,6 +4540,35 @@ class TimeClockGUI:
                 f"Sick Leave: {sick_accrual} hours/year\n" +
                 f"Vacation: {vacation_accrual} hours/year"
             )
+
+    def recalculate_entry_wages(self):
+        """Recalculate all closed entry wages using overtime rules."""
+        response = messagebox.askyesno(
+            "Recalculate Entry Wages",
+            "This will recalculate stored wages for all closed time entries using:\n\n"
+            "- Daily overtime over 8 hours\n"
+            "- Weekly overtime over 40 regular hours\n\n"
+            "A backup will be created first. Continue?"
+        )
+
+        if not response:
+            return
+
+        try:
+            self.backup_data()
+            results = self.data_manager.recalculate_all_entry_wages()
+            self.refresh_all()
+            messagebox.showinfo(
+                "Wage Recalculation Complete",
+                f"Processed Entries: {results['processed']}\n"
+                f"Updated Entries: {results['updated']}\n"
+                f"Unchanged Entries: {results['unchanged']}\n\n"
+                f"Total Wages Before: ${results['total_before']:.2f}\n"
+                f"Total Wages After:  ${results['total_after']:.2f}\n"
+                f"Difference:         ${results['difference']:.2f}"
+            )
+        except Exception as e:
+            messagebox.showerror("Recalculation Failed", f"Could not recalculate entry wages:\n\n{str(e)}")
     
     def manage_departments(self):
         """Manage department list"""
