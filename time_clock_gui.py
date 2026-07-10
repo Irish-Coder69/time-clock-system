@@ -70,7 +70,9 @@ except ImportError:
                 "July", "August", "September", "October", "November", "December",
             ]
             weekday_names = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
-            weekday_offset = 6 if str(self._firstweekday).lower().startswith("mon") else 0
+            starts_monday = str(self._firstweekday).lower().startswith("mon")
+            weekday_offset = 6 if starts_monday else 0
+            calendar_firstweekday = 0 if starts_monday else 6
 
             today = self._current_date
             month_var = tk.IntVar(value=today.month)
@@ -107,7 +109,8 @@ except ImportError:
                     display_index = (column + weekday_offset) % 7
                     ttk.Label(calendar_frame, text=weekday_names[display_index], width=4, anchor=tk.CENTER).grid(row=0, column=column, padx=1, pady=(0, 4))
 
-                month_calendar = calendar.monthcalendar(year_value, month_index)
+                # Keep the day grid aligned with the displayed weekday headers.
+                month_calendar = calendar.Calendar(firstweekday=calendar_firstweekday).monthdayscalendar(year_value, month_index)
                 for row_index, week in enumerate(month_calendar, start=1):
                     for column, day in enumerate(week):
                         if day == 0:
