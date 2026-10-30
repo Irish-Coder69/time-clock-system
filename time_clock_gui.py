@@ -13,6 +13,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 import webbrowser
+import uuid
 from tkinter import ttk, messagebox, scrolledtext, simpledialog, filedialog
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -218,6 +219,17 @@ class TimeClockData:
     def __init__(self, data_file: str = None):
         self.data_file = data_file if data_file is not None else get_data_file_path()
         self.data = self.load_data()
+
+    @staticmethod
+    def ensure_time_entry_ids(entries):
+        """Assign stable identifiers to time entries, including imported legacy entries."""
+        used_ids = set()
+        for entry in entries:
+            entry_id = entry.get("entry_id")
+            if not isinstance(entry_id, str) or not entry_id or entry_id in used_ids:
+                entry_id = uuid.uuid4().hex
+                entry["entry_id"] = entry_id
+            used_ids.add(entry_id)
     
     def load_data(self) -> Dict:
         """Load time clock data from JSON file"""
@@ -239,6 +251,8 @@ class TimeClockData:
                     data["daily_notes"] = []
                 if "invoices" not in data:
                     data["invoices"] = []
+                data.setdefault("time_entries", [])
+                self.ensure_time_entry_ids(data["time_entries"])
                 return data
         return {
             "employees": {},
@@ -320,6 +334,7 @@ class TimeClockData:
         employee["current_entry"] = len(self.data["time_entries"])
         
         entry = {
+            "entry_id": uuid.uuid4().hex,
             "employee_id": employee_id,
             "name": employee["name"],
             "clock_in": clock_in_time,
@@ -557,6 +572,7 @@ class TimeClockData:
         
         # Create entry
         entry = {
+            "entry_id": uuid.uuid4().hex,
             "employee_id": employee_id,
             "name": employee["name"],
             "clock_in": clock_in_time.isoformat(),
@@ -1437,7 +1453,7 @@ class TimeClockGUI:
         tab = ttk.Frame(self.notebook, padding="20")
         self.notebook.add(tab, text="📝 Daily Notes")
         tab.columnconfigure(0, weight=1)
-        tab.rowconfigure(1, weight=2)
+        tab.rowconfigure(1, weight=1)
         tab.rowconfigure(3, weight=1)
 
         date_frame = ttk.Frame(tab)
@@ -1447,8 +1463,25 @@ class TimeClockGUI:
         date_picker = DateEntry(date_frame, width=16, date_pattern="mm/dd/yyyy", firstweekday="sunday")
         date_picker.pack(side=tk.LEFT, padx=(0, 8))
 
-        notes_frame = ttk.Frame(tab)
-        notes_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        day_frame = ttk.Frame(tab)
+        day_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        day_frame.columnconfigure(0, weight=1)
+        day_frame.columnconfigure(1, weight=1)
+        day_frame.rowconfigure(0, weight=1)
+
+        punches_frame = ttk.LabelFrame(day_frame, text="Punches for this date", padding=8)
+        punches_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 6))
+        punches_frame.columnconfigure(0, weight=1)
+        punches_frame.rowconfigure(0, weight=1)
+        punches_list = tk.Listbox(punches_frame, font=('Segoe UI', 10), bg='#34495e', fg=self.fg_color,
+                      selectmode=tk.SINGLE, exportselection=False)
+        punches_list.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        punches_scrollbar = ttk.Scrollbar(punches_frame, orient=tk.VERTICAL, command=punches_list.yview)
+        punches_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        punches_list.configure(yscrollcommand=punches_scrollbar.set)
+
+        notes_frame = ttk.LabelFrame(day_frame, text="Notes for this date", padding=8)
+        notes_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(6, 0))
         notes_frame.columnconfigure(0, weight=1)
         notes_frame.rowconfigure(0, weight=1)
 
@@ -1473,13 +1506,38 @@ class TimeClockGUI:
         note_editor.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         visible_notes = []
+        visible_punches = []
 
-        def refresh_daily_notes():
+        def refresh_daily_notes(preserve_punch_id=None):
+            punches_list.delete(0, tk.END)
             notes_list.delete(0, tk.END)
             note_editor.delete('1.0', tk.END)
             visible_notes.clear()
+            visible_punches.clear()
 
             selected_date = date_picker.get_date().strftime('%m/%d/%Y')
+            for entry in self.data_manager.data.get("time_entries", []):
+                try:
+                    punch_date = datetime.fromisoformat(entry["clock_in"]).strftime('%m/%d/%Y')
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if punch_date == selected_date:
+                    visible_punches.append(entry)
+
+            visible_punches.sort(key=lambda entry: entry.get("clock_in", ""))
+            for entry in visible_punches:
+                clock_in = datetime.fromisoformat(entry["clock_in"])
+                clock_out_text = "In progress"
+                if entry.get("clock_out"):
+                    clock_out_text = datetime.fromisoformat(entry["clock_out"]).strftime('%I:%M %p')
+                employee = self.data_manager.data.get("employees", {}).get(entry.get("employee_id"), {})
+                employee_name = employee.get("name", entry.get("name", "Unknown"))
+                punches_list.insert(tk.END, f"{employee_name} | {clock_in.strftime('%I:%M %p')} - {clock_out_text}")
+                if entry.get("entry_id") == preserve_punch_id:
+                    punch_index = len(visible_punches) - 1
+                    punches_list.selection_set(punch_index)
+                    punches_list.activate(punch_index)
+
             visible_notes.extend(
                 sorted(
                     (note for note in self.data_manager.data.get("daily_notes", [])
@@ -1492,21 +1550,49 @@ class TimeClockGUI:
                 preview = " ".join(str(note.get("note", "")).split())
                 if len(preview) > 110:
                     preview = preview[:107] + "..."
-                notes_list.insert(tk.END, f"#{note.get('id', '?')}  {preview}")
+                punch_id = note.get("punch_id")
+                linked_punch = next((entry for entry in visible_punches if entry.get("entry_id") == punch_id), None)
+                if linked_punch:
+                    employee = self.data_manager.data.get("employees", {}).get(linked_punch.get("employee_id"), {})
+                    context = employee.get("name", linked_punch.get("name", "Punch"))
+                elif punch_id:
+                    context = "Punch no longer available"
+                else:
+                    context = "Day"
+                notes_list.insert(tk.END, f"{context} | #{note.get('id', '?')}  {preview}")
 
             count_label.config(text=f"{len(visible_notes)} note{'s' if len(visible_notes) != 1 else ''} for {selected_date}")
+
+        def selected_punch():
+            selection = punches_list.curselection()
+            if not selection:
+                return None
+            return visible_punches[selection[0]]
 
         def load_selected_note(_event=None):
             selection = notes_list.curselection()
             if not selection:
                 return
+            note = visible_notes[selection[0]]
             note_editor.delete('1.0', tk.END)
-            note_editor.insert('1.0', visible_notes[selection[0]].get("note", ""))
+            note_editor.insert('1.0', note.get("note", ""))
+            punches_list.selection_clear(0, tk.END)
+            punch_id = note.get("punch_id")
+            if punch_id:
+                for index, entry in enumerate(visible_punches):
+                    if entry.get("entry_id") == punch_id:
+                        punches_list.selection_set(index)
+                        punches_list.activate(index)
+                        break
 
         def start_new_note():
             notes_list.selection_clear(0, tk.END)
             note_editor.delete('1.0', tk.END)
             note_editor.focus_set()
+
+        def start_day_note():
+            start_new_note()
+            punches_list.selection_clear(0, tk.END)
 
         def add_daily_note():
             note_content = note_editor.get('1.0', tk.END).strip()
@@ -1516,13 +1602,15 @@ class TimeClockGUI:
 
             daily_notes = self.data_manager.data.setdefault("daily_notes", [])
             note_id = max((int(note.get("id", 0)) for note in daily_notes), default=0) + 1
+            punch = selected_punch()
             daily_notes.append({
                 "id": note_id,
                 "date": date_picker.get_date().strftime('%m/%d/%Y'),
                 "note": note_content,
+                "punch_id": punch.get("entry_id") if punch else None,
             })
             self.data_manager.save_data()
-            refresh_daily_notes()
+            refresh_daily_notes(punch.get("entry_id") if punch else None)
 
         def save_daily_note_edit():
             selection = notes_list.curselection()
@@ -1535,9 +1623,12 @@ class TimeClockGUI:
                 messagebox.showwarning("Empty Note", "A saved note cannot be empty.")
                 return
 
-            visible_notes[selection[0]]["note"] = note_content
+            note = visible_notes[selection[0]]
+            punch = selected_punch()
+            note["note"] = note_content
+            note["punch_id"] = punch.get("entry_id") if punch else None
             self.data_manager.save_data()
-            refresh_daily_notes()
+            refresh_daily_notes(punch.get("entry_id") if punch else None)
 
         def delete_daily_note():
             selection = notes_list.curselection()
@@ -1560,6 +1651,7 @@ class TimeClockGUI:
         button_frame.grid(row=4, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Button(button_frame, text="Show Date", command=refresh_daily_notes).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(button_frame, text="New Note", command=start_new_note).pack(side=tk.LEFT, padx=6)
+        ttk.Button(button_frame, text="Day Note", command=start_day_note).pack(side=tk.LEFT, padx=6)
         ttk.Button(button_frame, text="Add Note", command=add_daily_note).pack(side=tk.LEFT, padx=6)
         ttk.Button(button_frame, text="Save Changes", command=save_daily_note_edit).pack(side=tk.LEFT, padx=6)
         ttk.Button(button_frame, text="Delete Note", command=delete_daily_note).pack(side=tk.LEFT, padx=6)
@@ -4152,6 +4244,8 @@ class TimeClockGUI:
                         if dept not in self.data_manager.data.get("departments", []):
                             self.data_manager.data.setdefault("departments", []).append(dept)
                 
+                self.data_manager.data.setdefault("time_entries", [])
+                self.data_manager.ensure_time_entry_ids(self.data_manager.data["time_entries"])
                 self.data_manager.save_data()
                 self.refresh_all()
                 
