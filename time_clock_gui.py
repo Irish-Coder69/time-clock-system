@@ -235,6 +235,8 @@ class TimeClockData:
                     data["departments"] = ["General", "Sales", "Operations", "Administration", "IT"]
                 if "project_notes" not in data:
                     data["project_notes"] = []
+                if "daily_notes" not in data:
+                    data["daily_notes"] = []
                 if "invoices" not in data:
                     data["invoices"] = []
                 return data
@@ -246,6 +248,7 @@ class TimeClockData:
             "leave_requests": [],
             "departments": ["General", "Sales", "Operations", "Administration", "IT"],
             "project_notes": [],
+            "daily_notes": [],
             "invoices": []
         }
     
@@ -1119,6 +1122,7 @@ class TimeClockGUI:
         self.create_reports_tab()
         self.create_employee_management_tab()
         self.create_projects_tab()
+        self.create_daily_notes_tab()
         self.create_invoice_tab()
         
         # Initialize data in tabs
@@ -1427,6 +1431,140 @@ class TimeClockGUI:
         self.project_list_text = scrolledtext.ScrolledText(tab, font=('Consolas', 9), 
                                                           bg='#34495e', fg=self.fg_color)
         self.project_list_text.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+    def create_daily_notes_tab(self):
+        """Create a date-based notes workspace supporting multiple notes per day."""
+        tab = ttk.Frame(self.notebook, padding="20")
+        self.notebook.add(tab, text="📝 Daily Notes")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=2)
+        tab.rowconfigure(3, weight=1)
+
+        date_frame = ttk.Frame(tab)
+        date_frame.grid(row=0, column=0, sticky=tk.W, pady=(0, 12))
+        ttk.Label(date_frame, text="Date:", style="Header.TLabel").pack(side=tk.LEFT, padx=(0, 8))
+
+        date_picker = DateEntry(date_frame, width=16, date_pattern="mm/dd/yyyy", firstweekday="sunday")
+        date_picker.pack(side=tk.LEFT, padx=(0, 8))
+
+        notes_frame = ttk.Frame(tab)
+        notes_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        notes_frame.columnconfigure(0, weight=1)
+        notes_frame.rowconfigure(0, weight=1)
+
+        notes_list = tk.Listbox(notes_frame, font=('Segoe UI', 10), bg='#34495e', fg=self.fg_color,
+                                selectmode=tk.SINGLE, exportselection=False)
+        notes_list.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        notes_scrollbar = ttk.Scrollbar(notes_frame, orient=tk.VERTICAL, command=notes_list.yview)
+        notes_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        notes_list.configure(yscrollcommand=notes_scrollbar.set)
+
+        count_label = ttk.Label(tab, text="0 notes for this date")
+        count_label.grid(row=2, column=0, sticky=tk.W, pady=(8, 4))
+
+        editor_frame = ttk.Frame(tab)
+        editor_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        editor_frame.columnconfigure(0, weight=1)
+        editor_frame.rowconfigure(1, weight=1)
+        ttk.Label(editor_frame, text="Note:", style="Header.TLabel").grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
+
+        note_editor = tk.Text(editor_frame, height=8, wrap=tk.WORD, font=('Segoe UI', 10),
+                              bg='#34495e', fg=self.fg_color, insertbackground=self.fg_color)
+        note_editor.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        visible_notes = []
+
+        def refresh_daily_notes():
+            notes_list.delete(0, tk.END)
+            note_editor.delete('1.0', tk.END)
+            visible_notes.clear()
+
+            selected_date = date_picker.get_date().strftime('%m/%d/%Y')
+            visible_notes.extend(
+                sorted(
+                    (note for note in self.data_manager.data.get("daily_notes", [])
+                     if note.get("date") == selected_date),
+                    key=lambda note: note.get("id", 0)
+                )
+            )
+
+            for note in visible_notes:
+                preview = " ".join(str(note.get("note", "")).split())
+                if len(preview) > 110:
+                    preview = preview[:107] + "..."
+                notes_list.insert(tk.END, f"#{note.get('id', '?')}  {preview}")
+
+            count_label.config(text=f"{len(visible_notes)} note{'s' if len(visible_notes) != 1 else ''} for {selected_date}")
+
+        def load_selected_note(_event=None):
+            selection = notes_list.curselection()
+            if not selection:
+                return
+            note_editor.delete('1.0', tk.END)
+            note_editor.insert('1.0', visible_notes[selection[0]].get("note", ""))
+
+        def start_new_note():
+            notes_list.selection_clear(0, tk.END)
+            note_editor.delete('1.0', tk.END)
+            note_editor.focus_set()
+
+        def add_daily_note():
+            note_content = note_editor.get('1.0', tk.END).strip()
+            if not note_content:
+                messagebox.showwarning("Empty Note", "Enter a note before adding it.")
+                return
+
+            daily_notes = self.data_manager.data.setdefault("daily_notes", [])
+            note_id = max((int(note.get("id", 0)) for note in daily_notes), default=0) + 1
+            daily_notes.append({
+                "id": note_id,
+                "date": date_picker.get_date().strftime('%m/%d/%Y'),
+                "note": note_content,
+            })
+            self.data_manager.save_data()
+            refresh_daily_notes()
+
+        def save_daily_note_edit():
+            selection = notes_list.curselection()
+            if not selection:
+                messagebox.showwarning("No Note Selected", "Select a note to edit, or use Add Note to create one.")
+                return
+
+            note_content = note_editor.get('1.0', tk.END).strip()
+            if not note_content:
+                messagebox.showwarning("Empty Note", "A saved note cannot be empty.")
+                return
+
+            visible_notes[selection[0]]["note"] = note_content
+            self.data_manager.save_data()
+            refresh_daily_notes()
+
+        def delete_daily_note():
+            selection = notes_list.curselection()
+            if not selection:
+                messagebox.showwarning("No Note Selected", "Select a note to delete.")
+                return
+
+            note = visible_notes[selection[0]]
+            if not messagebox.askyesno("Delete Note", "Delete the selected note?"):
+                return
+
+            self.data_manager.data["daily_notes"].remove(note)
+            self.data_manager.save_data()
+            refresh_daily_notes()
+
+        notes_list.bind("<<ListboxSelect>>", load_selected_note)
+        date_picker.bind("<<DateEntrySelected>>", lambda _event: refresh_daily_notes())
+
+        button_frame = ttk.Frame(tab)
+        button_frame.grid(row=4, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Button(button_frame, text="Show Date", command=refresh_daily_notes).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(button_frame, text="New Note", command=start_new_note).pack(side=tk.LEFT, padx=6)
+        ttk.Button(button_frame, text="Add Note", command=add_daily_note).pack(side=tk.LEFT, padx=6)
+        ttk.Button(button_frame, text="Save Changes", command=save_daily_note_edit).pack(side=tk.LEFT, padx=6)
+        ttk.Button(button_frame, text="Delete Note", command=delete_daily_note).pack(side=tk.LEFT, padx=6)
+
+        refresh_daily_notes()
     
     def create_invoice_tab(self):
         """Create the Invoice Management tab"""
