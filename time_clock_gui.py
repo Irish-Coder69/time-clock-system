@@ -19,8 +19,10 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 try:
-    from tkcalendar import DateEntry
+    from tkcalendar import Calendar as TkCalendar, DateEntry
 except ImportError:
+    TkCalendar = None
+
     class DateEntry(ttk.Frame):
         """Fallback date picker when tkcalendar is unavailable."""
 
@@ -444,9 +446,16 @@ class TimeClockData:
         return total
 
     def _week_start_date(self, dt_value: datetime):
-        """Return the Monday date for the week containing dt_value."""
+        """Return the configured workweek start date for dt_value."""
         day_value = dt_value.date()
-        return day_value - timedelta(days=day_value.weekday())
+        weekdays = list(calendar.day_name)
+        configured_start = self.data.get("system_config", {}).get("workweek_start_day", "Monday")
+        try:
+            start_weekday = weekdays.index(configured_start)
+        except ValueError:
+            start_weekday = 0
+        days_since_start = (day_value.weekday() - start_weekday) % 7
+        return day_value - timedelta(days=days_since_start)
 
     def _calculate_work_entry_pay(self, entries: List[Dict]):
         """Calculate regular/overtime allocation using the 40-hour weekly threshold."""
@@ -1147,6 +1156,7 @@ class TimeClockGUI:
         self.create_employee_management_tab()
         self.create_projects_tab()
         self.create_daily_notes_tab()
+        self.create_punch_calendar_tab()
         self.create_invoice_tab()
         
         # Initialize data in tabs
@@ -1665,6 +1675,151 @@ class TimeClockGUI:
         ttk.Button(button_frame, text="Delete Note", command=delete_daily_note).pack(side=tk.LEFT, padx=6)
 
         refresh_daily_notes()
+
+    def create_punch_calendar_tab(self):
+        """Show a monthly calendar and punch times for the selected date."""
+        tab = ttk.Frame(self.notebook, padding="20")
+        self.notebook.add(tab, text="📆 Punch Calendar")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+
+        content = ttk.Frame(tab)
+        content.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        calendar_frame = ttk.LabelFrame(content, text="Punch dates", padding=10)
+        calendar_frame.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.W), padx=(0, 12))
+
+        details_frame = ttk.Frame(content)
+        details_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+        details_frame.columnconfigure(0, weight=1)
+        details_frame.rowconfigure(1, weight=1)
+
+        selected_date = datetime.now().date()
+        date_label = ttk.Label(details_frame, text="", style="Header.TLabel")
+        date_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 10))
+
+        columns = ("employee", "clock_in", "clock_out", "hours", "project")
+        punches_tree = ttk.Treeview(details_frame, columns=columns, show="headings", height=16)
+        for column, heading, width in (
+            ("employee", "Employee", 190),
+            ("clock_in", "Clock In", 110),
+            ("clock_out", "Clock Out", 110),
+            ("hours", "Hours", 80),
+            ("project", "Project", 150),
+        ):
+            punches_tree.heading(column, text=heading)
+            punches_tree.column(column, width=width, minwidth=70, anchor=tk.W)
+        punches_tree.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        tree_scrollbar = ttk.Scrollbar(details_frame, orient=tk.VERTICAL, command=punches_tree.yview)
+        tree_scrollbar.grid(row=1, column=1, sticky=(tk.N, tk.S))
+        punches_tree.configure(yscrollcommand=tree_scrollbar.set)
+
+        calendar_widget = None
+        date_picker = None
+        marker_ids = []
+        if TkCalendar is not None:
+            calendar_widget = TkCalendar(
+                calendar_frame,
+                selectmode="day",
+                year=selected_date.year,
+                month=selected_date.month,
+                day=selected_date.day,
+                firstweekday="sunday",
+                date_pattern="mm/dd/yyyy",
+            )
+            calendar_widget.pack()
+            calendar_widget.tag_config("punches", background="#2980b9", foreground="white")
+        else:
+            date_picker = DateEntry(calendar_frame, width=16, date_pattern="mm/dd/yyyy", firstweekday="sunday")
+            date_picker.set_date(selected_date)
+            date_picker.pack(anchor=tk.W)
+
+        def get_selected_date():
+            if calendar_widget is not None:
+                return calendar_widget.selection_get()
+            return date_picker.get_date()
+
+        def refresh_punch_markers():
+            if calendar_widget is None:
+                return
+
+            if marker_ids:
+                calendar_widget.calevent_remove(*marker_ids)
+                marker_ids.clear()
+
+            month, year = calendar_widget.get_displayed_month()
+            punch_counts = {}
+            for entry in self.data_manager.data.get("time_entries", []):
+                try:
+                    punch_date = datetime.fromisoformat(entry["clock_in"]).date()
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if punch_date.month == month and punch_date.year == year:
+                    punch_counts[punch_date] = punch_counts.get(punch_date, 0) + 1
+
+            for punch_date, count in punch_counts.items():
+                text = f"{count} punch" if count == 1 else f"{count} punches"
+                marker_ids.append(calendar_widget.calevent_create(punch_date, text, tags="punches"))
+
+        def refresh_punch_list(_event=None):
+            chosen_date = get_selected_date()
+            date_label.config(text=chosen_date.strftime("%A, %m/%d/%Y"))
+
+            for row_id in punches_tree.get_children():
+                punches_tree.delete(row_id)
+
+            entries = []
+            for entry in self.data_manager.data.get("time_entries", []):
+                try:
+                    clock_in = datetime.fromisoformat(entry["clock_in"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if clock_in.date() == chosen_date:
+                    entries.append((clock_in, entry))
+
+            for clock_in, entry in sorted(entries, key=lambda item: item[0]):
+                employee = self.data_manager.data.get("employees", {}).get(entry.get("employee_id"), {})
+                employee_name = employee.get("name", entry.get("name", "Unknown"))
+                clock_out_text = "In progress"
+                if entry.get("clock_out"):
+                    try:
+                        clock_out_text = datetime.fromisoformat(entry["clock_out"]).strftime("%I:%M %p")
+                    except (TypeError, ValueError):
+                        clock_out_text = "Unknown"
+
+                hours_text = ""
+                if entry.get("clock_out"):
+                    hours_text = f"{float(entry.get('hours_worked', 0) or 0):.2f}"
+
+                punches_tree.insert(
+                    "",
+                    tk.END,
+                    values=(employee_name, clock_in.strftime("%I:%M %p"), clock_out_text, hours_text, entry.get("project", "General")),
+                )
+
+            punch_count = len(entries)
+            count_text = f"{punch_count} punch{'es' if punch_count != 1 else ''}"
+            date_label.config(text=f"{chosen_date.strftime('%A, %m/%d/%Y')} | {count_text}")
+
+        if calendar_widget is not None:
+            calendar_widget.bind("<<CalendarSelected>>", refresh_punch_list)
+            calendar_widget.bind("<<CalendarMonthChanged>>", lambda _event: refresh_punch_markers())
+        else:
+            ttk.Button(calendar_frame, text="Show Date", command=refresh_punch_list).pack(anchor=tk.W, pady=(8, 0))
+            date_picker.bind("<<DateEntrySelected>>", lambda _event: refresh_punch_list())
+
+        def refresh_when_opened(_event=None):
+            if self.notebook.select() == str(tab):
+                refresh_punch_markers()
+                refresh_punch_list()
+
+        self.notebook.bind("<<NotebookTabChanged>>", refresh_when_opened)
+
+        refresh_punch_markers()
+        refresh_punch_list()
     
     def create_invoice_tab(self):
         """Create the Invoice Management tab"""
@@ -5224,7 +5379,7 @@ class TimeClockGUI:
         """System configuration settings"""
         dialog = tk.Toplevel(self.root)
         dialog.title("System Configuration")
-        dialog.geometry("700x600")
+        dialog.geometry("700x720")
         dialog.configure(bg=self.bg_color)
         dialog.transient(self.root)
         
@@ -5242,11 +5397,15 @@ class TimeClockGUI:
                 "currency": "USD",
                 "rounding_method": "15 minutes",
                 "email_notifications": True,
-                "backup_frequency": "Daily"
+                "backup_frequency": "Daily",
+                "workweek_start_day": "Monday",
+                "workweek_end_day": "Sunday"
             }
             self.data_manager.save_data()
         
         config = self.data_manager.data["system_config"]
+        config.setdefault("workweek_start_day", "Monday")
+        config.setdefault("workweek_end_day", "Sunday")
         
         # Company Name
         ttk.Label(frame, text="Company Name:", font=('Segoe UI', 10, 'bold')).pack(anchor=tk.W, pady=(10, 5))
@@ -5277,6 +5436,17 @@ class TimeClockGUI:
         round_combo = ttk.Combobox(frame, state='readonly', width=38, values=["No rounding", "5 minutes", "10 minutes", "15 minutes", "30 minutes"])
         round_combo.set(config.get("rounding_method", "15 minutes"))
         round_combo.pack(anchor=tk.W, pady=(0, 10))
+
+        weekdays = list(calendar.day_name)
+        ttk.Label(frame, text="Work Week Starts On:", font=('Segoe UI', 10, 'bold')).pack(anchor=tk.W, pady=5)
+        workweek_start_combo = ttk.Combobox(frame, state='readonly', width=38, values=weekdays)
+        workweek_start_combo.set(config.get("workweek_start_day", "Monday"))
+        workweek_start_combo.pack(anchor=tk.W, pady=(0, 8))
+
+        ttk.Label(frame, text="Work Week Ends On:", font=('Segoe UI', 10, 'bold')).pack(anchor=tk.W, pady=5)
+        workweek_end_combo = ttk.Combobox(frame, state='readonly', width=38, values=weekdays)
+        workweek_end_combo.set(config.get("workweek_end_day", "Sunday"))
+        workweek_end_combo.pack(anchor=tk.W, pady=(0, 10))
         
         # Email Notifications
         email_var = tk.BooleanVar(value=config.get("email_notifications", True))
@@ -5289,6 +5459,19 @@ class TimeClockGUI:
         backup_combo.pack(anchor=tk.W, pady=(0, 10))
         
         def save_config():
+            start_day = workweek_start_combo.get()
+            end_day = workweek_end_combo.get()
+            if (
+                start_day not in weekdays
+                or end_day not in weekdays
+                or weekdays[(weekdays.index(start_day) - 1) % 7] != end_day
+            ):
+                messagebox.showerror(
+                    "Invalid Work Week",
+                    "The work week must cover seven consecutive days. Select an end day six days after the start day."
+                )
+                return
+
             self.data_manager.data["system_config"] = {
                 "company_name": company_entry.get().strip(),
                 "time_zone": tz_combo.get(),
@@ -5296,7 +5479,9 @@ class TimeClockGUI:
                 "currency": curr_combo.get(),
                 "rounding_method": round_combo.get(),
                 "email_notifications": email_var.get(),
-                "backup_frequency": backup_combo.get()
+                "backup_frequency": backup_combo.get(),
+                "workweek_start_day": start_day,
+                "workweek_end_day": end_day
             }
             self.data_manager.save_data()
             messagebox.showinfo("Success", "System configuration saved successfully.")
