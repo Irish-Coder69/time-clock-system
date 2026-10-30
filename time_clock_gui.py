@@ -377,6 +377,8 @@ class TimeClockData:
         entry["clock_out"] = clock_out_time
         entry["hours_worked"] = round(hours_worked, 2)
         entry["wages"] = round(wages, 2)
+
+        self._update_stored_entry_wages(self.get_time_entries(employee_id))
         
         # Update employee status
         employee["clocked_in"] = False
@@ -447,7 +449,7 @@ class TimeClockData:
         return day_value - timedelta(days=day_value.weekday())
 
     def _calculate_work_entry_pay(self, entries: List[Dict]):
-        """Calculate regular/overtime allocation using 8-hour day and 40-hour week rules."""
+        """Calculate regular/overtime allocation using the 40-hour weekly threshold."""
         processed = []
         for entry in entries:
             if entry.get("clock_out") is None:
@@ -473,29 +475,31 @@ class TimeClockData:
         # Process by employee then by time so weekly thresholds are applied in order.
         processed.sort(key=lambda x: (x["employee_id"] or "", x["clock_in_dt"]))
 
-        weekly_regular_hours = {}
+        weekly_hours = {}
         for item in processed:
             emp_id = item["employee_id"]
             week_key = (emp_id, item["week_start"])
-            regular_so_far = weekly_regular_hours.get(week_key, 0.0)
-
-            # Rule 1: Daily overtime for net hours beyond 8.
-            daily_ot = max(0.0, item["net_hours"] - 8.0)
-            daily_regular = item["net_hours"] - daily_ot
-
-            # Rule 2: Weekly overtime for regular hours beyond 40 in the same week.
-            remaining_regular_week = max(0.0, 40.0 - regular_so_far)
-            weekly_ot_from_regular = max(0.0, daily_regular - remaining_regular_week)
-
-            regular_hours = daily_regular - weekly_ot_from_regular
-            overtime_hours = daily_ot + weekly_ot_from_regular
-
-            weekly_regular_hours[week_key] = regular_so_far + regular_hours
+            weekly_hours_before_entry = weekly_hours.get(week_key, 0.0)
+            regular_hours = min(item["net_hours"], max(0.0, 40.0 - weekly_hours_before_entry))
+            overtime_hours = item["net_hours"] - regular_hours
+            weekly_hours[week_key] = weekly_hours_before_entry + item["net_hours"]
 
             item["regular_hours"] = round(regular_hours, 2)
             item["overtime_hours"] = round(overtime_hours, 2)
 
         return processed
+
+    def _update_stored_entry_wages(self, entries: List[Dict]):
+        """Persist wage allocations using the weekly overtime threshold."""
+        for item in self._calculate_work_entry_pay(entries):
+            entry = item["entry"]
+            employee = self.data["employees"].get(entry.get("employee_id"))
+            hourly_rate = float(entry.get("hourly_rate", 0) or 0)
+            overtime_rate = employee.get("overtime_rate", hourly_rate * 1.5) if employee else hourly_rate * 1.5
+            entry["wages"] = round(
+                item["regular_hours"] * hourly_rate + item["overtime_hours"] * overtime_rate,
+                2,
+            )
     
     def calculate_total_wages(self, employee_id: Optional[str] = None):
         """Calculate total wages"""
@@ -584,6 +588,7 @@ class TimeClockData:
         }
         
         self.data["time_entries"].append(entry)
+        self._update_stored_entry_wages(self.get_time_entries(employee_id))
         self.save_data()
         
         message = f"Manual entry added for {employee['name']}\n"
@@ -958,7 +963,9 @@ class TimeClockData:
             if emp.get("current_entry") is not None and emp["current_entry"] > entry_index:
                 emp["current_entry"] -= 1
         
+        employee_id = entry["employee_id"]
         del self.data["time_entries"][entry_index]
+        self._update_stored_entry_wages(self.get_time_entries(employee_id))
         self.save_data()
         return True, "Entry deleted successfully!"
     
@@ -1004,6 +1011,7 @@ class TimeClockData:
             employee["clocked_in"] = False
             employee["current_entry"] = None
 
+        self._update_stored_entry_wages(self.get_time_entries(entry["employee_id"]))
         self.save_data()
         
         message = f"Entry updated for {entry['name']}\n"
@@ -4777,9 +4785,7 @@ class TimeClockGUI:
         """Recalculate all closed entry wages using overtime rules."""
         response = messagebox.askyesno(
             "Recalculate Entry Wages",
-            "This will recalculate stored wages for all closed time entries using:\n\n"
-            "- Daily overtime over 8 hours\n"
-            "- Weekly overtime over 40 regular hours\n\n"
+            "This will recalculate stored wages for all closed time entries using overtime only for hours worked beyond 40 in a workweek.\n\n"
             "A backup will be created first. Continue?"
         )
 
