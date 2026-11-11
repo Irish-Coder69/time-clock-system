@@ -445,6 +445,54 @@ class TimeClockData:
             total += normalized["duration"]
         return total
 
+    def calculate_employee_day_hours(self, employee_id: str, day=None, now: datetime = None) -> float:
+        """Return today's worked hours, including an open punch and excluding unpaid breaks."""
+        employee = self.data.get("employees", {}).get(employee_id)
+        if not employee:
+            return 0.0
+
+        day = day or datetime.now().date()
+        current_entry_index = employee.get("current_entry")
+        total_hours = 0.0
+
+        for entry_index, entry in enumerate(self.get_time_entries(employee_id)):
+            try:
+                clock_in = datetime.fromisoformat(entry["clock_in"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if clock_in.date() != day:
+                continue
+
+            unpaid_break_hours = self.calculate_break_hours(entry, unpaid_only=True)
+            clock_out_value = entry.get("clock_out")
+            if clock_out_value:
+                worked_hours = float(entry.get("hours_worked", 0) or 0)
+            else:
+                current_time = now or datetime.now(clock_in.tzinfo)
+                if clock_in.tzinfo is None and current_time.tzinfo is not None:
+                    current_time = current_time.replace(tzinfo=None)
+                elif clock_in.tzinfo is not None and current_time.tzinfo is None:
+                    current_time = current_time.replace(tzinfo=clock_in.tzinfo)
+                worked_hours = max(0.0, (current_time - clock_in).total_seconds() / 3600)
+
+                if (
+                    employee.get("on_break")
+                    and current_entry_index == entry_index
+                    and employee.get("break_type", "Unpaid") == "Unpaid"
+                    and employee.get("break_start")
+                ):
+                    break_start = datetime.fromisoformat(employee["break_start"])
+                    break_end = current_time
+                    if break_start.tzinfo is None and break_end.tzinfo is not None:
+                        break_end = break_end.replace(tzinfo=None)
+                    elif break_start.tzinfo is not None and break_end.tzinfo is None:
+                        break_end = break_end.replace(tzinfo=break_start.tzinfo)
+                    unpaid_break_hours += max(0.0, (break_end - break_start).total_seconds() / 3600)
+
+            total_hours += max(0.0, worked_hours - unpaid_break_hours)
+
+        return total_hours
+
     def _week_start_date(self, dt_value: datetime):
         """Return the configured workweek start date for dt_value."""
         day_value = dt_value.date()
@@ -1206,10 +1254,13 @@ class TimeClockGUI:
         self.info_text = tk.Text(info_frame, height=10, width=35, font=('Segoe UI', 10), 
                                 bg='#34495e', fg=self.fg_color, relief=tk.FLAT, padx=10, pady=10)
         self.info_text.pack(fill=tk.BOTH, expand=True)
+
+        self.day_hours_label = ttk.Label(left_panel, text="Hours Today: --:--:--", style='Header.TLabel')
+        self.day_hours_label.grid(row=5, column=0, sticky=tk.W, pady=(0, 10))
         
         # Clock In/Out Buttons
         button_frame = ttk.Frame(left_panel)
-        button_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        button_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         self.clock_in_btn = tk.Button(button_frame, text="🟢 CLOCK IN", font=('Segoe UI', 12, 'bold'),
                                       bg=self.success_color, fg='white', relief=tk.FLAT, 
@@ -1851,7 +1902,21 @@ class TimeClockGUI:
         time_str = now.strftime("%I:%M:%S %p")
         date_str = now.strftime("%m/%d/%Y")
         self.clock_label.config(text=f"{date_str} | {time_str}")
+        self.update_day_hours(now)
         self.root.after(1000, self.update_clock)
+
+    def update_day_hours(self, now=None):
+        """Refresh the selected employee's elapsed hours for today."""
+        selection = self.employee_combo.get()
+        if not selection:
+            self.day_hours_label.config(text="Hours Today: --:--:--")
+            return
+
+        employee_id = selection.split(' - ')[0]
+        elapsed_seconds = int(self.data_manager.calculate_employee_day_hours(employee_id, now=now) * 3600)
+        hours, remainder = divmod(elapsed_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.day_hours_label.config(text=f"Hours Today: {hours:02d}:{minutes:02d}:{seconds:02d}")
     
     def refresh_employee_list(self):
         """Refresh the employee dropdown"""
@@ -1943,6 +2008,7 @@ class TimeClockGUI:
             self.info_text.insert('1.0', "Please select an employee\nfrom the dropdown above.")
             self.entries_text.delete('1.0', tk.END)
             self.entries_text.insert('1.0', "Select an employee to view time entries.")
+            self.update_day_hours()
             return
         
         emp_id = selection.split(' - ')[0]
@@ -1990,6 +2056,7 @@ class TimeClockGUI:
             self.info_text.insert('1.0', info)
         
         self.refresh_time_entries()
+        self.update_day_hours()
     
     def refresh_time_entries(self):
         """Refresh the time entries display"""
