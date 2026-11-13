@@ -1627,6 +1627,7 @@ class TimeClockGUI:
 
         date_picker = DateEntry(date_frame, width=16, date_pattern="mm/dd/yyyy", firstweekday="sunday")
         date_picker.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(date_frame, text="Browse Past Notes", command=self.browse_daily_notes).pack(side=tk.LEFT, padx=8)
 
         day_frame = ttk.Frame(tab)
         day_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -1822,6 +1823,155 @@ class TimeClockGUI:
         ttk.Button(button_frame, text="Delete Note", command=delete_daily_note).pack(side=tk.LEFT, padx=6)
 
         refresh_daily_notes()
+
+    def browse_daily_notes(self):
+        """Browse, edit, and delete daily notes from any date."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Past Daily Notes")
+        dialog.geometry("950x620")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+
+        frame = ttk.Frame(dialog, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+        frame.rowconfigure(3, weight=1)
+
+        ttk.Label(frame, text="Past Daily Notes", style="Header.TLabel").grid(
+            row=0, column=0, sticky=tk.W, pady=(0, 10)
+        )
+
+        notes_tree = ttk.Treeview(
+            frame,
+            columns=("date", "association", "preview"),
+            show="headings",
+            selectmode="browse",
+        )
+        notes_tree.heading("date", text="Date")
+        notes_tree.heading("association", text="Associated With")
+        notes_tree.heading("preview", text="Note")
+        notes_tree.column("date", width=110, minwidth=100, anchor=tk.W)
+        notes_tree.column("association", width=190, minwidth=130, anchor=tk.W)
+        notes_tree.column("preview", width=540, minwidth=200, anchor=tk.W)
+        notes_tree.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        notes_scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=notes_tree.yview)
+        notes_scrollbar.grid(row=1, column=1, sticky=(tk.N, tk.S))
+        notes_tree.configure(yscrollcommand=notes_scrollbar.set)
+
+        visible_notes = []
+
+        def note_sort_key(note):
+            note_date = str(note.get("date", ""))
+            for date_format in ("%m/%d/%Y", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(note_date, date_format), int(note.get("id", 0))
+                except ValueError:
+                    continue
+            return datetime.min, int(note.get("id", 0))
+
+        def refresh_notes(select_note_id=None):
+            existing_items = notes_tree.get_children()
+            if existing_items:
+                notes_tree.delete(*existing_items)
+            visible_notes.clear()
+            visible_notes.extend(sorted(
+                self.data_manager.data.get("daily_notes", []),
+                key=note_sort_key,
+                reverse=True,
+            ))
+
+            for index, note in enumerate(visible_notes):
+                punch_id = note.get("punch_id")
+                punch = next((
+                    entry for entry in self.data_manager.data.get("time_entries", [])
+                    if entry.get("entry_id") == punch_id
+                ), None)
+                if punch:
+                    employee = self.data_manager.data.get("employees", {}).get(punch.get("employee_id"), {})
+                    association = employee.get("name", punch.get("name", "Punch"))
+                elif punch_id:
+                    association = "Punch no longer available"
+                else:
+                    association = "Day"
+
+                preview = " ".join(str(note.get("note", "")).split())
+                if len(preview) > 140:
+                    preview = preview[:137] + "..."
+                item_id = str(index)
+                notes_tree.insert(
+                    "",
+                    tk.END,
+                    iid=item_id,
+                    values=(format_date_display(note.get("date")), association, preview),
+                )
+                if note.get("id") == select_note_id:
+                    notes_tree.selection_set(item_id)
+                    notes_tree.focus(item_id)
+
+        def selected_note():
+            selection = notes_tree.selection()
+            if not selection:
+                messagebox.showwarning("No Note Selected", "Select a past note first.", parent=dialog)
+                return None
+            return visible_notes[int(selection[0])]
+
+        ttk.Label(frame, text="Selected Note:", style="Header.TLabel").grid(
+            row=2, column=0, sticky=tk.W, pady=(12, 4)
+        )
+        note_editor = tk.Text(
+            frame, height=8, wrap=tk.WORD, font=('Segoe UI', 10),
+            bg='#34495e', fg=self.fg_color, insertbackground=self.fg_color,
+        )
+        note_editor.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        def load_selected_note(_event=None):
+            selection = notes_tree.selection()
+            if not selection:
+                return
+            note = visible_notes[int(selection[0])]
+            note_editor.delete('1.0', tk.END)
+            note_editor.insert('1.0', note.get("note", ""))
+
+        def save_note_edit():
+            note = selected_note()
+            if note is None:
+                return
+            note_content = note_editor.get('1.0', tk.END).strip()
+            if not note_content:
+                messagebox.showwarning("Empty Note", "A saved note cannot be empty.", parent=dialog)
+                return
+
+            note["note"] = note_content
+            self.data_manager.save_data()
+            refresh_notes(note.get("id"))
+            messagebox.showinfo("Note Saved", "The note was updated.", parent=dialog)
+
+        def delete_note():
+            note = selected_note()
+            if note is None:
+                return
+            if not messagebox.askyesno(
+                "Delete Note",
+                f"Delete the note from {format_date_display(note.get('date'))}?",
+                parent=dialog,
+            ):
+                return
+
+            self.data_manager.data["daily_notes"].remove(note)
+            self.data_manager.save_data()
+            note_editor.delete('1.0', tk.END)
+            refresh_notes()
+
+        notes_tree.bind("<<TreeviewSelect>>", load_selected_note)
+        button_frame = ttk.Frame(frame)
+        button_frame.grid(row=4, column=0, sticky=tk.W, pady=(12, 0))
+        ttk.Button(button_frame, text="Save Changes", command=save_note_edit).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(button_frame, text="Delete Note", command=delete_note).pack(side=tk.LEFT, padx=6)
+        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side=tk.LEFT, padx=6)
+
+        refresh_notes()
 
     def create_punch_calendar_tab(self):
         """Show a monthly calendar and punch times for the selected date."""
