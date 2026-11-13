@@ -842,22 +842,42 @@ class TimeClockData:
         
         return report_entries
     
+    @staticmethod
+    def leave_balance_key(leave_type: str):
+        """Return the employee balance field for a leave type, including legacy names."""
+        return {
+            "pto": "pto_balance",
+            "sick": "sick_balance",
+            "sick leave": "sick_balance",
+            "vacation": "vacation_balance",
+        }.get(str(leave_type).strip().lower())
+
     def request_leave(self, employee_id: str, leave_type: str, start_date: str, end_date: str, hours: float, reason: str = ""):
         """Submit a leave request"""
         if employee_id not in self.data["employees"]:
             return False, "Employee not found!"
+
+        balance_key = self.leave_balance_key(leave_type)
+        if balance_key is None:
+            return False, "Invalid leave type!"
+        if hours <= 0:
+            return False, "Leave hours must be greater than zero!"
         
         employee = self.data["employees"][employee_id]
         
         # Check balance
-        balance_key = f"{leave_type.lower()}_balance"
         current_balance = employee.get(balance_key, 0)
         
         if current_balance < hours:
             return False, f"Insufficient {leave_type} balance! Available: {current_balance:.2f} hours"
         
+        existing_request_ids = (
+            int(item.get("request_id", 0))
+            for item in self.data["leave_requests"]
+            if str(item.get("request_id", "")).isdigit()
+        )
         request = {
-            "request_id": len(self.data["leave_requests"]) + 1,
+            "request_id": max(existing_request_ids, default=0) + 1,
             "employee_id": employee_id,
             "employee_name": employee["name"],
             "leave_type": leave_type,
@@ -891,7 +911,9 @@ class TimeClockData:
             return False, "Employee not found!"
         
         # Deduct from balance
-        balance_key = f"{request['leave_type'].lower()}_balance"
+        balance_key = self.leave_balance_key(request["leave_type"])
+        if balance_key is None:
+            return False, "Invalid leave type!"
         employee[balance_key] = employee.get(balance_key, 0) - request["hours"]
         
         request["status"] = "Approved"
@@ -918,6 +940,77 @@ class TimeClockData:
         
         self.save_data()
         return True, "Leave request denied"
+
+    def update_leave_request(self, request_id: int, employee_id: str, leave_type: str,
+                             start_date: str, end_date: str, hours: float, reason: str = ""):
+        """Update a leave request while maintaining any approved balance deduction."""
+        request = next((item for item in self.data.get("leave_requests", [])
+                        if item.get("request_id") == request_id), None)
+        if request is None:
+            return False, "Leave request not found!"
+        if employee_id not in self.data.get("employees", {}):
+            return False, "Employee not found!"
+
+        balance_key = self.leave_balance_key(leave_type)
+        if balance_key is None:
+            return False, "Invalid leave type!"
+        if hours <= 0:
+            return False, "Leave hours must be greater than zero!"
+
+        try:
+            start = datetime.strptime(start_date, "%m/%d/%Y").date()
+            end = datetime.strptime(end_date, "%m/%d/%Y").date()
+        except ValueError:
+            return False, "Invalid leave date! Use MM/DD/YYYY."
+        if end < start:
+            return False, "End date cannot be before start date!"
+
+        old_employee = self.data.get("employees", {}).get(request.get("employee_id"))
+        old_balance_key = self.leave_balance_key(request.get("leave_type", ""))
+        old_balance = None
+        was_approved = request.get("status") == "Approved"
+
+        if was_approved and old_employee and old_balance_key:
+            old_balance = float(old_employee.get(old_balance_key, 0) or 0)
+            old_employee[old_balance_key] = old_balance + float(request.get("hours", 0) or 0)
+
+        employee = self.data["employees"][employee_id]
+        if was_approved:
+            available_balance = float(employee.get(balance_key, 0) or 0)
+            if available_balance < hours:
+                if old_balance is not None:
+                    old_employee[old_balance_key] = old_balance
+                return False, f"Insufficient {leave_type} balance! Available: {available_balance:.2f} hours"
+            employee[balance_key] = available_balance - hours
+
+        request.update({
+            "employee_id": employee_id,
+            "employee_name": employee.get("name", request.get("employee_name", "")),
+            "leave_type": leave_type,
+            "start_date": start_date,
+            "end_date": end_date,
+            "hours": hours,
+            "reason": reason,
+        })
+        self.save_data()
+        return True, "Leave request updated successfully."
+
+    def delete_leave_request(self, request_id: int):
+        """Delete a leave request and restore its balance if it was approved."""
+        requests = self.data.get("leave_requests", [])
+        request = next((item for item in requests if item.get("request_id") == request_id), None)
+        if request is None:
+            return False, "Leave request not found!"
+
+        if request.get("status") == "Approved":
+            employee = self.data.get("employees", {}).get(request.get("employee_id"))
+            balance_key = self.leave_balance_key(request.get("leave_type", ""))
+            if employee and balance_key:
+                employee[balance_key] = float(employee.get(balance_key, 0) or 0) + float(request.get("hours", 0) or 0)
+
+        requests.remove(request)
+        self.save_data()
+        return True, "Leave request deleted successfully."
     
     def adjust_pto_balance(self, employee_id: str, leave_type: str, hours: float, reason: str = ""):
         """Manually adjust PTO balance"""
@@ -925,7 +1018,9 @@ class TimeClockData:
             return False, "Employee not found!"
         
         employee = self.data["employees"][employee_id]
-        balance_key = f"{leave_type.lower()}_balance"
+        balance_key = self.leave_balance_key(leave_type)
+        if balance_key is None:
+            return False, "Invalid leave type!"
         
         old_balance = employee.get(balance_key, 0)
         employee[balance_key] = old_balance + hours
@@ -1425,6 +1520,7 @@ class TimeClockGUI:
         ttk.Button(btn_frame, text="✅ Approve", command=self.approve_leave).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="❌ Deny", command=self.deny_leave).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="🔄 Refresh", command=self.refresh_leave_requests).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="📝 Manage Records", command=self.manage_leave_records).pack(side=tk.LEFT, padx=5)
     
     def create_reports_tab(self):
         """Create the Reports tab"""
@@ -3908,6 +4004,219 @@ class TimeClockGUI:
         btn_frame.pack(fill=tk.X)
         ttk.Button(btn_frame, text="❌ Deny", command=do_deny).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+    def manage_leave_records(self):
+        """Edit or delete saved leave records and keep approved balances synchronized."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Manage Leave Records")
+        dialog.geometry("950x560")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+
+        frame = ttk.Frame(dialog, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Manage Leave Records", style='Header.TLabel').grid(
+            row=0, column=0, sticky=tk.W, pady=(0, 10)
+        )
+
+        records_tree = ttk.Treeview(
+            frame,
+            columns=("request_id", "employee", "type", "start", "end", "hours", "status"),
+            show="headings",
+            selectmode="browse",
+        )
+        for column, heading, width in (
+            ("request_id", "ID", 55),
+            ("employee", "Employee", 185),
+            ("type", "Type", 105),
+            ("start", "Start Date", 105),
+            ("end", "End Date", 105),
+            ("hours", "Hours", 75),
+            ("status", "Status", 95),
+        ):
+            records_tree.heading(column, text=heading)
+            records_tree.column(column, width=width, minwidth=50, anchor=tk.W)
+        records_tree.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=records_tree.yview)
+        scrollbar.grid(row=1, column=1, sticky=(tk.N, tk.S))
+        records_tree.configure(yscrollcommand=scrollbar.set)
+
+        visible_records = []
+
+        def refresh_records():
+            records_tree.delete(*records_tree.get_children())
+            visible_records.clear()
+            visible_records.extend(reversed(self.data_manager.data.get("leave_requests", [])))
+            for index, record in enumerate(visible_records):
+                records_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(index),
+                    values=(
+                        record.get("request_id", ""),
+                        record.get("employee_name", "Unknown"),
+                        record.get("leave_type", "Unknown"),
+                        format_date_display(record.get("start_date")),
+                        format_date_display(record.get("end_date")),
+                        f"{float(record.get('hours', 0) or 0):.2f}",
+                        record.get("status", "Unknown"),
+                    ),
+                )
+
+        def selected_record():
+            selection = records_tree.selection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Select a leave record first.", parent=dialog)
+                return None
+            return visible_records[int(selection[0])]
+
+        def parse_record_date(value):
+            for date_format in ("%m/%d/%Y", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(str(value), date_format)
+                except ValueError:
+                    continue
+            return datetime.now()
+
+        def edit_selected():
+            record = selected_record()
+            if record is None:
+                return
+
+            edit_dialog = tk.Toplevel(dialog)
+            edit_dialog.title(f"Edit Leave Record #{record.get('request_id', '')}")
+            edit_dialog.geometry("580x540")
+            edit_dialog.configure(bg=self.bg_color)
+            edit_dialog.transient(dialog)
+            edit_dialog.grab_set()
+
+            edit_frame = ttk.Frame(edit_dialog, padding="20")
+            edit_frame.pack(fill=tk.BOTH, expand=True)
+            edit_frame.columnconfigure(1, weight=1)
+
+            ttk.Label(edit_frame, text="Edit Leave Record", style='Header.TLabel').grid(
+                row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 15)
+            )
+
+            employees = self.data_manager.get_all_employees()
+            employee_options = {
+                f"{employee_id} - {employee.get('name', '')}": employee_id
+                for employee_id, employee in employees.items()
+            }
+            employee_combo = ttk.Combobox(
+                edit_frame, state='readonly', values=list(employee_options), width=35
+            )
+            employee_combo.grid(row=1, column=1, sticky=tk.W, pady=6)
+            for display_name, employee_id in employee_options.items():
+                if employee_id == record.get("employee_id"):
+                    employee_combo.set(display_name)
+                    break
+            ttk.Label(edit_frame, text="Employee:").grid(row=1, column=0, sticky=tk.W, pady=6)
+
+            ttk.Label(edit_frame, text="Leave Type:").grid(row=2, column=0, sticky=tk.W, pady=6)
+            leave_type_combo = ttk.Combobox(
+                edit_frame,
+                state='readonly',
+                values=["PTO", "Sick", "Sick Leave", "Vacation"],
+                width=35,
+            )
+            leave_type_combo.set(record.get("leave_type", "PTO"))
+            leave_type_combo.grid(row=2, column=1, sticky=tk.W, pady=6)
+
+            ttk.Label(edit_frame, text="Start Date:").grid(row=3, column=0, sticky=tk.W, pady=6)
+            start_date_picker = DateEntry(edit_frame, width=18, date_pattern='mm/dd/yyyy', firstweekday='sunday')
+            start_date_picker.set_date(parse_record_date(record.get("start_date", "")))
+            start_date_picker.grid(row=3, column=1, sticky=tk.W, pady=6)
+
+            ttk.Label(edit_frame, text="End Date:").grid(row=4, column=0, sticky=tk.W, pady=6)
+            end_date_picker = DateEntry(edit_frame, width=18, date_pattern='mm/dd/yyyy', firstweekday='sunday')
+            end_date_picker.set_date(parse_record_date(record.get("end_date", "")))
+            end_date_picker.grid(row=4, column=1, sticky=tk.W, pady=6)
+
+            ttk.Label(edit_frame, text="Hours:").grid(row=5, column=0, sticky=tk.W, pady=6)
+            hours_entry = ttk.Entry(edit_frame, width=20)
+            hours_entry.insert(0, str(record.get("hours", 0)))
+            hours_entry.grid(row=5, column=1, sticky=tk.W, pady=6)
+
+            ttk.Label(edit_frame, text="Status:").grid(row=6, column=0, sticky=tk.W, pady=6)
+            ttk.Label(edit_frame, text=record.get("status", "Unknown")).grid(
+                row=6, column=1, sticky=tk.W, pady=6
+            )
+
+            ttk.Label(edit_frame, text="Reason:").grid(row=7, column=0, sticky=(tk.W, tk.N), pady=6)
+            reason_text = tk.Text(edit_frame, width=40, height=5, wrap=tk.WORD)
+            reason_text.insert('1.0', record.get("reason", ""))
+            reason_text.grid(row=7, column=1, sticky=(tk.W, tk.E), pady=6)
+
+            def save_changes():
+                employee_id = employee_options.get(employee_combo.get())
+                if not employee_id:
+                    messagebox.showerror("Invalid Employee", "Select an employee.", parent=edit_dialog)
+                    return
+                try:
+                    hours = float(hours_entry.get())
+                except ValueError:
+                    messagebox.showerror("Invalid Hours", "Enter a valid number of hours.", parent=edit_dialog)
+                    return
+
+                success, message = self.data_manager.update_leave_request(
+                    record.get("request_id"),
+                    employee_id,
+                    leave_type_combo.get(),
+                    start_date_picker.get_date().strftime('%m/%d/%Y'),
+                    end_date_picker.get_date().strftime('%m/%d/%Y'),
+                    hours,
+                    reason_text.get('1.0', tk.END).strip(),
+                )
+                if not success:
+                    messagebox.showerror("Update Failed", message, parent=edit_dialog)
+                    return
+
+                self.refresh_leave_requests()
+                self.refresh_employee_list_display()
+                self.update_leave_balance()
+                refresh_records()
+                edit_dialog.destroy()
+
+            button_frame = ttk.Frame(edit_frame)
+            button_frame.grid(row=8, column=0, columnspan=2, pady=(15, 0))
+            ttk.Button(button_frame, text="Save Changes", command=save_changes).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Cancel", command=edit_dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        def delete_selected():
+            record = selected_record()
+            if record is None:
+                return
+            confirmation = (
+                f"Delete {record.get('leave_type', 'leave')} for {record.get('employee_name', 'employee')}?\n\n"
+                f"{record.get('start_date', '')} to {record.get('end_date', '')} | "
+                f"{float(record.get('hours', 0) or 0):.2f} hours | {record.get('status', 'Unknown')}"
+            )
+            if not messagebox.askyesno("Delete Leave Record", confirmation, parent=dialog):
+                return
+
+            success, message = self.data_manager.delete_leave_request(record.get("request_id"))
+            if not success:
+                messagebox.showerror("Delete Failed", message, parent=dialog)
+                return
+
+            self.refresh_leave_requests()
+            self.refresh_employee_list_display()
+            self.update_leave_balance()
+            refresh_records()
+
+        button_frame = ttk.Frame(frame)
+        button_frame.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(12, 0))
+        ttk.Button(button_frame, text="Edit Selected", command=edit_selected).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(button_frame, text="Delete Selected", command=delete_selected).pack(side=tk.LEFT, padx=6)
+        ttk.Button(button_frame, text="Refresh", command=refresh_records).pack(side=tk.LEFT, padx=6)
+        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side=tk.LEFT, padx=6)
+
+        refresh_records()
     
     def adjust_pto_dialog(self):
         """Dialog to manually adjust PTO balance"""
@@ -4982,7 +5291,7 @@ class TimeClockGUI:
                         
                         if leave_type == 'PTO':
                             emp['pto_balance'] -= hours
-                        elif leave_type == 'Sick Leave':
+                        elif leave_type in ('Sick', 'Sick Leave'):
                             emp['sick_balance'] -= hours
                         elif leave_type == 'Vacation':
                             emp['vacation_balance'] -= hours
